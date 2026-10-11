@@ -30,6 +30,14 @@ pub enum ProviderError {
     /// The call timed out.
     #[error("provider timeout: {0}")]
     Timeout(String),
+
+    /// The provider's spend budget is exhausted; the request was NOT sent.
+    #[error("provider budget exceeded: {0}")]
+    BudgetExceeded(String),
+
+    /// The spend could not be journaled (the reply is withheld).
+    #[error("provider ledger error: {0}")]
+    Ledger(String),
 }
 
 impl From<reqwest::Error> for ProviderError {

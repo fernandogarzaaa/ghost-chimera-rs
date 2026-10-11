@@ -79,6 +79,10 @@ impl ModelProvider for AnthropicProvider {
         "anthropic"
     }
 
+    fn model(&self) -> &str {
+        &self.model
+    }
+
     fn chat(&self, system: &str, user: &str) -> Result<String, ProviderError> {
         if !self.is_available() {
             return Err(ProviderError::Unavailable(

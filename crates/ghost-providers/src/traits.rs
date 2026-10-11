@@ -12,6 +12,12 @@ pub trait ModelProvider: Send + Sync {
     /// Provider id, e.g. `"nebius"`, `"anthropic"`, `"groq"`.
     fn name(&self) -> &str;
 
+    /// Model id used for requests (journaled in the cost ledger).
+    /// Defaults to `"unknown"` for providers that do not expose one.
+    fn model(&self) -> &str {
+        "unknown"
+    }
+
     /// Send a chat request, return the assistant's text reply.
     fn chat(&self, system: &str, user: &str) -> Result<String, ProviderError>;
 

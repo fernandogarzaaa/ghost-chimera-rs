@@ -279,6 +279,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
         self.spec.name
     }
 
+    fn model(&self) -> &str {
+        &self.model
+    }
+
     fn chat(&self, system: &str, user: &str) -> Result<String, ProviderError> {
         if !self.is_available() {
             return Err(ProviderError::Unavailable(format!(
