@@ -81,7 +81,7 @@
   "license": "MIT",
   "main": "main.js",
   "name": "ghost-console",
-  "repository": "github:fernandogarzaaa/GHOST-Chimera",
+  "repository": "github:fernandogarzaaa/ghost-chimera-rs",
   "scripts": {
     "dist": "electron-builder",
     "dist:dir": "electron-builder --dir",
