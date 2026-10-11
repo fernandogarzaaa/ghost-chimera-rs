@@ -139,6 +139,12 @@ def main() -> int:
         proc = run_mutants(output_dir, diff_path)
     print(proc.stdout)
 
+    # If only test files changed, cargo-mutants finds no mutants to filter.
+    # This is not a failure; there's no source code to mutate.
+    if "No mutants to filter" in proc.stdout:
+        print("MUTATION GATE SKIPPED: no source mutants in diff (test-only changes).")
+        return 0
+
     parsed = parse_summary(proc.stdout)
     if parsed is None:
         print(
