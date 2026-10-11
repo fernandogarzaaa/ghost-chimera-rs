@@ -228,6 +228,10 @@ jobs:
           mkdir -p release-assets
           for d in rust-bins/rust-*/; do
             target=$(basename "$d" | sed 's/^rust-//')
+            if [ -z "$(ls -A "$d")" ]; then
+              echo "Skipping empty artifact: $target"
+              continue
+            fi
             (cd "$d" && zip -j "../../release-assets/ghost-${target}.zip" .)
           done
           ls -la release-assets/
