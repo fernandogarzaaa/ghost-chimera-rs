@@ -18,13 +18,13 @@ import tempfile
 from pathlib import Path
 
 SUMMARY_RE = re.compile(
-    r"(\\d+)\\s+mutants?\\s+tested(?:\\s+in\\s+\\S+)?\\s*:",
+    r"(\d+)\s+mutants?\s+tested(?:\s+in\s+\S+)?\s*:",
     re.IGNORECASE,
 )
-KILLED_RE = re.compile(r"(\\d+)\\s+(?:killed|caught)", re.IGNORECASE)
-SURVIVED_RE = re.compile(r"(\\d+)\\s+(?:survived|missed|not caught)", re.IGNORECASE)
-TIMEOUT_RE = re.compile(r"(\\d+)\\s+(?:timeouts?|timed out)", re.IGNORECASE)
-UNVIABLE_RE = re.compile(r"(\\d+)\\s+unviable", re.IGNORECASE)
+KILLED_RE = re.compile(r"(\d+)\s+(?:killed|caught)", re.IGNORECASE)
+SURVIVED_RE = re.compile(r"(\d+)\s+(?:survived|missed|not caught)", re.IGNORECASE)
+TIMEOUT_RE = re.compile(r"(\d+)\s+(?:timeouts?|timed out)", re.IGNORECASE)
+UNVIABLE_RE = re.compile(r"(\d+)\s+unviable", re.IGNORECASE)
 
 
 def git_diff(base_ref: str) -> tuple[str | None, str | None]:
