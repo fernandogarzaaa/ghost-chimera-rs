@@ -232,7 +232,10 @@ jobs:
               echo "Skipping empty artifact: $target"
               continue
             fi
-            (cd "$d" && zip -j "../../release-assets/ghost-${target}.zip" .)
+            # `zip -j archive .` adds nothing (a directory without -r) and
+            # fails with "Nothing to do!"; zip the staged files themselves.
+            # download-artifact drops the executable bit, so restore it.
+            (cd "$d" && chmod +x ./* && zip -j "../../release-assets/ghost-${target}.zip" ./*)
           done
           ls -la release-assets/
       - name: Attach CLI binaries to release

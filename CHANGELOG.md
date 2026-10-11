@@ -46,6 +46,9 @@ checklist in SPEC.md section 7 to be fully green).
   excluded); no longer rejects all-caught runs. Unviable and timed-out mutants
   still count as not killed.
 - `deny.toml` migrated to the cargo-deny >= 0.18 schema.
+- Release `upload-cli-binaries` failed with `zip error: Nothing to do!`
+  (`zip -j archive .` adds no files); it now zips the staged binaries and
+  restores their executable bit.
 
 ### Changed
 - reqwest uses rustls only (`default-features = false`): no OpenSSL or
