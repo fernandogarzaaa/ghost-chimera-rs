@@ -25,6 +25,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.5.0)'
+        required: true
 
 concurrency:
   group: release-${{ github.ref }}
