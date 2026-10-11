@@ -75,10 +75,9 @@ Per-OS verification:
 ## Must-verify items (not checkable in this sandbox)
 
 - `publish.owner`/`publish.repo` in `desktop/package.json` must match
-  the repo where GitHub Releases are published, or auto-update
-  resolves the wrong feed. Currently set to
-  `fernandogarzaaa/GHOST-Chimera`; update when the Rust workspace gets
-  its own repo.
+  the repository where GitHub Releases are published. The Rust workspace
+  currently publishes to `fernandogarzaaa/ghost-chimera-rs`; verify that
+  the release assets and updater manifests land there.
 - Windows/macOS code signing and macOS notarization need the secrets
   in RELEASING.md; unsigned builds show SmartScreen/Gatekeeper
   warnings (expected for alphas).

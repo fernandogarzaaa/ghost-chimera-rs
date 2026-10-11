@@ -34,7 +34,7 @@ fn install_crash_hook() {
 fn install_crash_hook_with_dir(crashes_dir: PathBuf) {
     let meta = human_panic::Metadata::new("ghost", env!("CARGO_PKG_VERSION"))
         .authors("Fernando Garza <fernandogarzaaa@gmail.com>")
-        .homepage("https://github.com/fernandogarzaaa/GHOST-Chimera");
+        .homepage("https://github.com/fernandogarzaaa/ghost-chimera-rs");
     std::panic::set_hook(Box::new(move |info| {
         let report = human_panic::report::Report::with_panic(&meta, info);
         let path = write_crash_report_to(&report, &crashes_dir);

@@ -8,6 +8,9 @@
 
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -68,7 +71,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        run: cargo install cargo-deny --version 0.20.2 --locked
       - name: Check licenses, bans, advisories
         run: cargo deny check
       - name: Install cargo-audit
@@ -89,9 +92,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-mutants
-        run: cargo install cargo-mutants --locked
+        run: cargo install cargo-mutants --version 27.1.0 --locked
       - name: Run mutation gate (80% kill rate on changed code)
-        run: python3 .github/scripts/mutation-gate.py --fail-under 80
+        env:
+          MUTATION_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: python3 .github/scripts/mutation-gate.py --base-ref "$MUTATION_BASE_REF" --fail-under 80
 
   desktop-lint:
     name: desktop-lint
