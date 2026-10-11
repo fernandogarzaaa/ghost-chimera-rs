@@ -22,7 +22,11 @@ fn anthropic_is_available_empty_key() {
 
 #[test]
 fn anthropic_is_available_with_key() {
-    let p = AnthropicProvider::with_credentials("sk-ant-key".to_string(), "test-model".to_string(), None);
+    let p = AnthropicProvider::with_credentials(
+        "sk-ant-key".to_string(),
+        "test-model".to_string(),
+        None,
+    );
     assert!(p.is_available());
 }
 
