@@ -46,7 +46,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Verify tag matches Cargo.toml and desktop/package.json
-        run: python3 .github/scripts/check-version.py "${{ github.ref_name }}"
+        run: python3 .github/scripts/check-version.py "${{ inputs.tag || github.ref_name }}"
 
   build-rust:
     name: rust-${{ matrix.target }}
@@ -173,7 +173,7 @@ jobs:
             const fs = require('fs');
             const p = 'desktop/package.json';
             const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
-            pkg.version = '${{ github.ref_name }}'.replace(/^v/, '');
+            pkg.version = '${{ inputs.tag || github.ref_name }}'.replace(/^v/, '');
             fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
           "
       # ---- optional code signing (skipped cleanly when secrets absent) ----
@@ -228,5 +228,5 @@ jobs:
       - name: Attach CLI binaries to release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: release-assets/*
