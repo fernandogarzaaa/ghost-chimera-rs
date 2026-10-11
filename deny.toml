@@ -61,7 +61,6 @@ deny = []
 skip = []
 skip-tree = []
 
-
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

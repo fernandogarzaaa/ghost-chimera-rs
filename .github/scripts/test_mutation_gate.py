@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""Unit tests for mutation-gate.py's cargo-mutants 27.x result parser.
+
+Run: python3 -m unittest discover -s .github/scripts -p 'test_*.py'
+"""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+_SPEC = importlib.util.spec_from_file_location("mutation_gate", Path(__file__).with_name("mutation-gate.py"))
+assert _SPEC and _SPEC.loader
+gate = importlib.util.module_from_spec(_SPEC)
+sys.modules[_SPEC.name] = gate  # dataclasses resolve their module via sys.modules
+_SPEC.loader.exec_module(gate)
+
+
+def _mutant(name: str, summary: str) -> dict:
+    return {
+        "scenario": {"Mutant": {"name": name, "file": "src/lib.rs"}},
+        "summary": summary,
+        "log_path": f"log/{name}.log",
+        "diff_path": f"diff/{name}.diff",
+        "phase_results": [],
+    }
+
+
+BASELINE = {"scenario": "Baseline", "summary": "Success", "log_path": "log/baseline.log", "phase_results": []}
+
+
+def write_fixture(root: Path, summaries: list[str], **overrides: int) -> Path:
+    """Write a mutants.out directory shaped like cargo-mutants 27.1.0 output."""
+    out = root / "mutants.out"
+    out.mkdir()
+    mutants = [_mutant(f"m{i}", s) for i, s in enumerate(summaries)]
+    counters = {name: 0 for name in gate.SUMMARY_TO_COUNTER.values()}
+    for s in summaries:
+        if s in gate.SUMMARY_TO_COUNTER:
+            counters[gate.SUMMARY_TO_COUNTER[s]] += 1
+    data = {"outcomes": [BASELINE, *mutants], "total_mutants": len(summaries), **counters}
+    data.update(overrides)
+    (out / "outcomes.json").write_text(json.dumps(data), encoding="utf-8")
+    for name in gate.LIST_FILES:
+        lines = [m["scenario"]["Mutant"]["name"] for m in mutants if gate.SUMMARY_TO_COUNTER.get(m["summary"]) == name]
+        (out / f"{name}.txt").write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+    return out
+
+
+class ReadCountsTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_baseline_excluded_and_unviable_counts_against(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant"] * 8 + ["MissedMutant", "Unviable"])
+        counts = gate.read_counts(out)
+        self.assertEqual(counts.total, 10)
+        self.assertEqual(counts.caught, 8)
+        self.assertEqual(counts.unviable, 1)
+        self.assertAlmostEqual(counts.rate, 80.0)
+        self.assertTrue(gate.evaluate(counts, 80.0)[0])
+
+    def test_unviable_can_fail_the_gate(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant"] * 7 + ["Unviable"] * 3)
+        passed, _ = gate.evaluate(gate.read_counts(out), 80.0)
+        self.assertFalse(passed)
+
+    def test_timeout_counts_against(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant"] * 3 + ["Timeout"])
+        self.assertAlmostEqual(gate.read_counts(out).rate, 75.0)
+
+    def test_all_caught_passes_without_missed_category(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant"] * 4)
+        self.assertTrue(gate.evaluate(gate.read_counts(out), 80.0)[0])
+
+    def test_zero_mutants_fails(self) -> None:
+        out = write_fixture(self.root, [])
+        self.assertFalse(gate.evaluate(gate.read_counts(out), 80.0)[0])
+
+    def test_counter_mismatch_fails_closed(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant", "MissedMutant"], caught=2, missed=0)
+        with self.assertRaises(gate.GateError):
+            gate.read_counts(out)
+
+    def test_total_including_baseline_fails_closed(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant", "CaughtMutant"], total_mutants=3)
+        with self.assertRaises(gate.GateError):
+            gate.read_counts(out)
+
+    def test_list_file_mismatch_fails_closed(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant", "MissedMutant"])
+        (out / "missed.txt").write_text("", encoding="utf-8")
+        with self.assertRaises(gate.GateError):
+            gate.read_counts(out)
+
+    def test_missing_outcomes_fails_closed(self) -> None:
+        (self.root / "mutants.out").mkdir()
+        with self.assertRaises(gate.GateError):
+            gate.read_counts(self.root / "mutants.out")
+
+    def test_unknown_scenario_fails_closed(self) -> None:
+        out = write_fixture(self.root, ["CaughtMutant"])
+        data = json.loads((out / "outcomes.json").read_text(encoding="utf-8"))
+        data["outcomes"][0]["scenario"] = "Something"
+        (out / "outcomes.json").write_text(json.dumps(data), encoding="utf-8")
+        with self.assertRaises(gate.GateError):
+            gate.read_counts(out)
+
+    def test_empty_base_is_rejected(self) -> None:
+        for base in ("", "   ", gate.ZERO_SHA):
+            with self.assertRaises(gate.GateError):
+                gate.git_diff(base)
+
+
+if __name__ == "__main__":
+    unittest.main()

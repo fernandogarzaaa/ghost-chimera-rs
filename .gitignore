@@ -18,3 +18,7 @@ desktop/sidecar-dl/
 Thumbs.db
 target/
 mutants.out*/
+
+# Python bytecode from CI helper scripts
+__pycache__/
+*.pyc
