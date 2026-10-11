@@ -53,7 +53,7 @@
     "publish": {
       "owner": "fernandogarzaaa",
       "provider": "github",
-      "repo": "GHOST-Chimera"
+      "repo": "ghost-chimera-rs"
     },
     "win": {
       "extraResources": [
