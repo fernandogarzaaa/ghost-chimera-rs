@@ -24,6 +24,10 @@ pub struct AppState {
     pub token: Option<String>,
     /// Crate version, served on `/api/console/status`.
     pub version: &'static str,
+    /// Force the offline deterministic kernel even when provider keys are
+    /// configured. Off by default; tests turn it on so they never depend
+    /// on (or spend against) keys in the developer's environment.
+    pub offline: bool,
 }
 
 impl AppState {
@@ -35,6 +39,13 @@ impl AppState {
             config: Arc::new(config),
             token,
             version: env!("CARGO_PKG_VERSION"),
+            offline: false,
         })
+    }
+
+    /// Same state, but every kernel is the offline deterministic one.
+    pub fn with_offline(mut self, offline: bool) -> Self {
+        self.offline = offline;
+        self
     }
 }

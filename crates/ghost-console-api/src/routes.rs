@@ -43,9 +43,41 @@ pub fn build_kernel(autonomy_level: &str) -> (ChimeraPilotKernel, Option<String>
     let note = if provider.is_some() {
         None
     } else {
-        Some("Ran on the offline deterministic backend (no model provider configured).".to_string())
+        Some(OFFLINE_NOTE.to_string())
     };
     (kernel, note)
+}
+
+/// Build a kernel that never touches the network: deterministic backend
+/// only, regardless of which provider keys are in the environment.
+///
+/// Used by tests (so results never depend on the developer's shell) and
+/// available to callers that must stay offline.
+pub fn build_offline_kernel(autonomy_level: &str) -> ChimeraPilotKernel {
+    let options = KernelOptions {
+        include_deterministic_backend: true,
+        deterministic_fulfill: true,
+        include_model_provider_backend: false,
+        autonomy_level: autonomy_level.to_string(),
+    };
+    ChimeraPilotKernel::default_with(options, None)
+}
+
+/// Offline note shared by every deterministic-only path.
+const OFFLINE_NOTE: &str =
+    "Ran on the offline deterministic backend (no model provider configured).";
+
+/// Kernel for a request: offline when the state demands it, else
+/// [`build_kernel_async`].
+async fn kernel_for(state: &AppState) -> (ChimeraPilotKernel, Option<String>) {
+    if state.offline {
+        (
+            build_offline_kernel(&state.config.autonomy_level),
+            Some(OFFLINE_NOTE.to_string()),
+        )
+    } else {
+        build_kernel_async(&state.config.autonomy_level).await
+    }
 }
 
 /// Async wrapper around [`build_kernel`]: constructs the kernel on a
@@ -105,7 +137,7 @@ pub async fn conversation_message(
         Ok(run) => run,
         Err(err) => return Json(json!({"ok": false, "error": err.to_string()})),
     };
-    let (kernel, note) = build_kernel_async(&state.config.autonomy_level).await;
+    let (kernel, note) = kernel_for(&state).await;
     let executions = match kernel.run(&objective) {
         Ok(executions) => executions,
         Err(err) => {
@@ -200,7 +232,7 @@ pub async fn trust_get_run(State(state): State<AppState>, Path(id): Path<String>
 
 /// Replay a journaled run through the kernel and return the comparison.
 pub async fn trust_replay(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let (kernel, _note) = build_kernel_async(&state.config.autonomy_level).await;
+    let (kernel, _note) = kernel_for(&state).await;
     let report = state.trust.replay_run(&id, &|objective| {
         kernel.run(objective).map(|executions| {
             executions
@@ -418,7 +450,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = GhostConfig::from_env();
         config.state_dir = dir.path().to_path_buf();
-        let state = AppState::new(config, None).unwrap();
+        // Offline: handler tests must not depend on provider keys.
+        let state = AppState::new(config, None).unwrap().with_offline(true);
         (dir, state)
     }
 

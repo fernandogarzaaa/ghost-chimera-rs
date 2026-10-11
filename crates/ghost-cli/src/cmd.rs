@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 
 use ghost_console_api::{build_kernel, serve, StandingOrderStore};
 use ghost_core::{GhostConfig, GhostError};
+use ghost_pilot::ChimeraPilotKernel;
 use ghost_trust::{RecordStepArgs, ReplayExecution, TrustRuntimeStore};
 
 /// `ghost` — the GHOST-Chimera command line.
@@ -169,6 +170,21 @@ pub(crate) fn run() -> i32 {
 /// Exit `2` when the objective is empty, `1` when any execution failed,
 /// `0` when every execution fulfilled the objective.
 pub(crate) fn run_ask(objective: &[String], as_json: bool, config: &GhostConfig) -> (i32, Value) {
+    if objective.join(" ").trim().is_empty() {
+        return (2, json!({"ok": false, "error": "objective is required"}));
+    }
+    let (kernel, _note) = build_kernel(&config.autonomy_level);
+    run_ask_with(objective, as_json, config, &kernel)
+}
+
+/// [`run_ask`] against an explicit kernel (tests inject an offline one so
+/// results never depend on provider keys in the environment).
+pub(crate) fn run_ask_with(
+    objective: &[String],
+    as_json: bool,
+    config: &GhostConfig,
+    kernel: &ChimeraPilotKernel,
+) -> (i32, Value) {
     let objective = objective.join(" ").trim().to_string();
     if objective.is_empty() {
         return (2, json!({"ok": false, "error": "objective is required"}));
@@ -181,7 +197,6 @@ pub(crate) fn run_ask(objective: &[String], as_json: bool, config: &GhostConfig)
         Ok(run) => run,
         Err(err) => return (1, json!({"ok": false, "error": err.to_string()})),
     };
-    let (kernel, _note) = build_kernel(&config.autonomy_level);
     let executions = match kernel.run(&objective) {
         Ok(executions) => executions,
         Err(err) => {
@@ -247,11 +262,20 @@ pub(crate) fn run_ask(objective: &[String], as_json: bool, config: &GhostConfig)
 
 /// Replay a journaled run through the kernel. Returns `(exit_code, report)`.
 pub(crate) fn run_trust_replay(run_id: &str, config: &GhostConfig) -> (i32, Value) {
+    let (kernel, _note) = build_kernel(&config.autonomy_level);
+    run_trust_replay_with(run_id, config, &kernel)
+}
+
+/// [`run_trust_replay`] against an explicit kernel.
+pub(crate) fn run_trust_replay_with(
+    run_id: &str,
+    config: &GhostConfig,
+    kernel: &ChimeraPilotKernel,
+) -> (i32, Value) {
     let store = match TrustRuntimeStore::new(&config.state_dir) {
         Ok(store) => store,
         Err(err) => return (1, json!({"ok": false, "error": err.to_string()})),
     };
-    let (kernel, _note) = build_kernel(&config.autonomy_level);
     match store.replay_run(run_id, &|objective| {
         kernel.run(objective).map(|executions| {
             executions
@@ -333,6 +357,19 @@ fn err_json(err: &GhostError) -> Value {
 mod tests {
     use super::*;
 
+    /// Offline wrappers: tests must not depend on provider keys in the
+    /// developer's environment (a configured key made the unfulfillable
+    /// objective go to the network and fail differently).
+    fn run_ask(objective: &[String], as_json: bool, config: &GhostConfig) -> (i32, Value) {
+        let kernel = ghost_console_api::build_offline_kernel(&config.autonomy_level);
+        super::run_ask_with(objective, as_json, config, &kernel)
+    }
+
+    fn run_trust_replay(run_id: &str, config: &GhostConfig) -> (i32, Value) {
+        let kernel = ghost_console_api::build_offline_kernel(&config.autonomy_level);
+        super::run_trust_replay_with(run_id, config, &kernel)
+    }
+
     fn test_config() -> (tempfile::TempDir, GhostConfig) {
         let dir = tempfile::tempdir().unwrap();
         let mut config = GhostConfig::from_env();
@@ -366,12 +403,10 @@ mod tests {
     #[test]
     fn ask_with_fulfillable_objective_returns_exit_0() {
         let (_dir, config) = test_config();
-        let registry = ghost_providers::ProviderRegistry::from_env();
-        if registry.is_empty() {
-            let (code, value) = run_ask(&["what is 6 * 7".to_string()], false, &config);
-            assert_eq!(code, 0);
-            assert_eq!(value["text"], "42");
-        }
+        let (code, value) = run_ask(&["what is 6 * 7".to_string()], false, &config);
+        assert_eq!(code, 0);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["text"], "42");
     }
 
     #[test]
