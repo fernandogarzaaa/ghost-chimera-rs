@@ -1,16 +1,25 @@
 # GHOST-Chimera (Rust)
 
-Production-ready rebuild of GHOST-Chimera in Rust. See [SPEC.md](SPEC.md)
-for the full Phase 0 architecture specification.
+GHOST-Chimera rebuilt as a Rust workspace with a local-first CLI, console API,
+provider adapters, trust journaling, and an Electron desktop shell. The rebuild
+is under active development; a green unit-test job is not by itself a production
+readiness claim. See [SPEC.md](SPEC.md) for the architecture and intended scope.
 
 ## Status
 
-- **Phase 0**: done — SPEC.md (11 crates, module mapping, IPC design, provider strategy)
-- **Phase 1**: done — `ghost-core`, `ghost-trust`, `ghost-stealth`
-  - 48 tests passing, `cargo clippy -- -D warnings` clean, `cargo fmt --check` clean
-  - Trust journals are byte-compatible with the Python implementation:
-    Rust verifies Python-written journals and vice versa
-    (`crates/ghost-trust/tests/py_journal_compat.rs`)
+- **Workspace:** seven Rust crates (`ghost-core`, `ghost-trust`, `ghost-stealth`,
+  `ghost-providers`, `ghost-pilot`, `ghost-console-api`, and `ghost-cli`).
+- **Desktop:** Electron shell that launches the Rust `ghost` sidecar.
+- **Verification:** CI runs formatting, Clippy, workspace tests, dependency
+  policy checks, mutation testing, and desktop JavaScript syntax checks.
+  Check the latest [CI run](https://github.com/fernandogarzaaa/ghost-chimera-rs/actions/workflows/ci.yml)
+  for the current result rather than relying on a static test count.
+- **Compatibility:** trust journals have cross-language fixtures in
+  `crates/ghost-trust/tests/py_journal_compat.rs`.
+- **Readiness boundary:** provider behavior, security controls, persistence
+  recovery, and packaged installers still require the automated and manual
+  verification described in [RELEASING.md](RELEASING.md) and
+  [desktop/TESTING.md](desktop/TESTING.md).
 
 ## Crates
 
