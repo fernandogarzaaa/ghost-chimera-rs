@@ -284,6 +284,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn auth_rejects_wrong_bearer_token() {
+        // Kills mutants that weaken the token comparison (e.g. `==` -> `!=`
+        // inversion or always-true). A wrong token must get 401.
+        let (_dir, state) = test_state_with_token(Some("secret-token"));
+        let (router, _count) = router(state);
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/console/status")
+            .header("Authorization", "Bearer wrong-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value, json!({"ok": false, "error": "unauthorized"}));
+    }
+
+    #[tokio::test]
+    async fn auth_rejects_malformed_bearer_token() {
+        // No "Bearer " prefix -> 401. Kills mutants that skip the prefix check.
+        let (_dir, state) = test_state_with_token(Some("secret-token"));
+        let (router, _count) = router(state);
+        let request = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/console/status")
+            .header("Authorization", "secret-token")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn loopback_serve_without_token_binds() {
+        // Kills the `&&` -> `||` mutant in serve()'s fail-closed guard.
+        // With `||`, a loopback bind with no token would incorrectly refuse.
+        // Loopback + no token must bind successfully (open dev mode).
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let handle = tokio::spawn(async move {
+            serve("127.0.0.1", 0, None, state_dir).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(
+            !handle.is_finished(),
+            "serve on loopback without token should bind, not refuse"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn non_loopback_bind_with_token_binds() {
+        // Complement: non-loopback WITH a token must bind (not refuse).
+        // Kills mutants that invert the guard condition.
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let handle = tokio::spawn(async move {
+            serve("0.0.0.0", 0, Some("tok".to_string()), state_dir).await
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(
+            !handle.is_finished(),
+            "serve on non-loopback with token should bind"
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
     async fn status_returns_version_and_route_count() {
         let (_dir, state) = test_state_with_token(None);
         let (router, count) = router(state.clone());
