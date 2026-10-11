@@ -71,7 +71,7 @@
 
 **Drift (4):** Minor-1 (12 unlinked routes) — ⏳ evaluate during console-api completion. Minor-2 (sdk.py) — ✅ deferred per SPEC. Minor-3 (saas init-db) — ✅ N/A (saas dropped). Minor-4 (SPEC Bug 1 stale) — ✅ noted; the real gap is Major-3.
 
-**Security (9):** m1–m9 — ⏳ PENDING PORT (MCP server auth, CSRF/CORS, approval opt-ins, BPO redaction, session redaction policy, key previews, LangSmith, MCP env inheritance, network defaults — apply when each subsystem is ported).
+**Security (9):** m2 (CSRF/CORS) — ✅ addressed for the console API: tokenless mode rejects non-loopback `Host`/`Origin`. m1, m3–m9 — ⏳ PENDING PORT (MCP server auth, CSRF/CORS, approval opt-ins, BPO redaction, session redaction policy, key previews, LangSmith, MCP env inheritance, network defaults — apply when each subsystem is ported).
 
 ---
 
