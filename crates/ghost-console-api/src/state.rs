@@ -37,7 +37,7 @@ impl AppState {
             trust: Arc::new(TrustRuntimeStore::new(&config.state_dir)?),
             orders: Arc::new(StandingOrderStore::new(&config.state_dir)?),
             config: Arc::new(config),
-            token,
+            token: crate::server::normalize_token(token),
             version: env!("CARGO_PKG_VERSION"),
             offline: false,
         })

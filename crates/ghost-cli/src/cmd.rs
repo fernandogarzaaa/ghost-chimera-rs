@@ -10,7 +10,7 @@
 use clap::{Parser, Subcommand};
 use serde_json::{json, Value};
 
-use ghost_console_api::{build_kernel, serve, StandingOrderStore};
+use ghost_console_api::{build_kernel, open_ledger, serve, StandingOrderStore};
 use ghost_core::{GhostConfig, GhostError};
 use ghost_pilot::ChimeraPilotKernel;
 use ghost_trust::{RecordStepArgs, ReplayExecution, TrustRuntimeStore};
@@ -44,6 +44,11 @@ enum Commands {
         #[command(subcommand)]
         command: StandingOrderCommands,
     },
+    /// Model spend ledger: per-provider totals and budget caps.
+    Spend {
+        #[command(subcommand)]
+        command: SpendCommands,
+    },
     /// Serve the console HTTP API.
     Console {
         /// Bind host (loopback by default).
@@ -55,6 +60,19 @@ enum Commands {
         /// Bearer token (overrides GHOST_CONSOLE_TOKEN).
         #[arg(long)]
         token: Option<String>,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum SpendCommands {
+    /// Show journaled spend, calls, tokens, and budgets per provider.
+    Show,
+    /// Cap a provider's total spend in USD (0 blocks it entirely).
+    SetBudget {
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        usd: f64,
     },
 }
 
@@ -129,6 +147,11 @@ pub(crate) fn run() -> i32 {
             println!("{}", serde_json::to_string_pretty(&value).unwrap());
             code
         }
+        Commands::Spend { command } => {
+            let (code, value) = run_spend(&command, &config);
+            println!("{}", serde_json::to_string_pretty(&value).unwrap());
+            code
+        }
         Commands::Console { host, port, token } => {
             // --token overrides the environment (empty flag value = unset).
             let token = token
@@ -173,7 +196,7 @@ pub(crate) fn run_ask(objective: &[String], as_json: bool, config: &GhostConfig)
     if objective.join(" ").trim().is_empty() {
         return (2, json!({"ok": false, "error": "objective is required"}));
     }
-    let (kernel, _note) = build_kernel(&config.autonomy_level);
+    let (kernel, _note) = build_kernel(&config.autonomy_level, &config.state_dir);
     run_ask_with(objective, as_json, config, &kernel)
 }
 
@@ -262,7 +285,7 @@ pub(crate) fn run_ask_with(
 
 /// Replay a journaled run through the kernel. Returns `(exit_code, report)`.
 pub(crate) fn run_trust_replay(run_id: &str, config: &GhostConfig) -> (i32, Value) {
-    let (kernel, _note) = build_kernel(&config.autonomy_level);
+    let (kernel, _note) = build_kernel(&config.autonomy_level, &config.state_dir);
     run_trust_replay_with(run_id, config, &kernel)
 }
 
@@ -343,6 +366,35 @@ pub(crate) fn run_standing_orders(
                     "objective": outcome.order.objective,
                     "order": outcome.order,
                 }),
+            ),
+            Err(err) => (1, err_json(&err)),
+        },
+    }
+}
+
+// -- spend ---------------------------------------------------------------
+
+/// Spend ledger commands against `<state_dir>/cost_ledger.jsonl`, the
+/// same durable ledger every model call is metered into (GAP H1).
+pub(crate) fn run_spend(command: &SpendCommands, config: &GhostConfig) -> (i32, Value) {
+    let ledger = match open_ledger(&config.state_dir) {
+        Ok(ledger) => ledger,
+        Err(err) => return (1, err_json(&err)),
+    };
+    match command {
+        SpendCommands::Show => (
+            0,
+            json!({
+                "ok": true,
+                "journal": ledger.journal_path().display().to_string(),
+                "daily_spend_usd": ledger.daily_spend(),
+                "providers": ledger.snapshot(),
+            }),
+        ),
+        SpendCommands::SetBudget { provider, usd } => match ledger.set_budget(provider, *usd) {
+            Ok(()) => (
+                0,
+                json!({"ok": true, "provider": provider, "budget_usd": usd}),
             ),
             Err(err) => (1, err_json(&err)),
         },
@@ -545,5 +597,45 @@ mod tests {
         assert_eq!(code, 1);
         assert!(value.is_object(), "value must be an object, got: {value}");
         assert_eq!(value["ok"], false);
+    }
+
+    #[test]
+    fn spend_set_budget_persists_and_show_reports_it() {
+        let (_dir, config) = test_config();
+        let (code, value) = run_spend(
+            &SpendCommands::SetBudget {
+                provider: "groq".to_string(),
+                usd: 2.5,
+            },
+            &config,
+        );
+        assert_eq!(code, 0, "{value}");
+        assert_eq!(value["budget_usd"], 2.5);
+        let (code, value) = run_spend(&SpendCommands::Show, &config);
+        assert_eq!(code, 0);
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["daily_spend_usd"], 0.0);
+        assert_eq!(value["providers"][0]["provider"], "groq");
+        assert_eq!(value["providers"][0]["budget_usd"], 2.5);
+        assert!(value["journal"]
+            .as_str()
+            .unwrap()
+            .ends_with("cost_ledger.jsonl"));
+    }
+
+    #[test]
+    fn spend_rejects_invalid_budget() {
+        let (_dir, config) = test_config();
+        let (code, value) = run_spend(
+            &SpendCommands::SetBudget {
+                provider: "groq".to_string(),
+                usd: -1.0,
+            },
+            &config,
+        );
+        assert_eq!(code, 1);
+        assert_eq!(value["ok"], false);
+        let (_, shown) = run_spend(&SpendCommands::Show, &config);
+        assert_eq!(shown["providers"], json!([]));
     }
 }
