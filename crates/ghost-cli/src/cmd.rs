@@ -473,4 +473,42 @@ mod tests {
         assert_eq!(code, 1);
         assert!(value["error"].as_str().unwrap().contains("not found"));
     }
+
+    #[test]
+    fn ask_value_is_object_not_null() {
+        // Kills the `(i32, Value::default())` mutants: the Value must be a
+        // JSON object with the expected shape, never Null.
+        let (_dir, config) = test_config();
+        let (code, value) = run_ask(&[], false, &config);
+        assert_eq!(code, 2);
+        assert!(value.is_object(), "value must be an object, got: {value}");
+        assert_eq!(value["ok"], false);
+    }
+
+    #[test]
+    fn ask_success_value_has_text_and_ok_true() {
+        // Kills mutants that replace the success tuple: both the code
+        // AND the value content are asserted.
+        let (_dir, config) = test_config();
+        let (code, value) = run_ask(&["what is 6 * 7".to_string()], false, &config);
+        // Deterministic backend: 6*7=42, exit 0. If providers are configured
+        // the test is skipped (non-deterministic).
+        let registry = ghost_providers::ProviderRegistry::from_env();
+        if registry.is_empty() {
+            assert_eq!(code, 0);
+            assert!(value.is_object());
+            assert_eq!(value["ok"], true);
+            assert_eq!(value["text"], "42");
+        }
+    }
+
+    #[test]
+    fn trust_replay_value_is_object_not_null() {
+        // Kills the `(i32, Value::default())` mutants for run_trust_replay.
+        let (_dir, config) = test_config();
+        let (code, value) = run_trust_replay("nope", &config);
+        assert_eq!(code, 1);
+        assert!(value.is_object(), "value must be an object, got: {value}");
+        assert_eq!(value["ok"], false);
+    }
 }
