@@ -19,6 +19,11 @@ db-path = "~/.cargo/advisory-dbs"
 db-urls = ["https://github.com/RustSec/advisory-db"]
 # Fail the build on yanked/unmaintained/unsound deps; warn-only would
 # let supply-chain rot accumulate silently.
+#
+# cargo-deny >= 0.18 removed per-kind lint levels: every advisory kind
+# (vulnerability, unmaintained, unsound, notice) is an error unless
+# ignored, and `unmaintained`/`unsound` now take the *scope* of crates
+# they apply to. "all" = direct and transitive dependencies (strictest).
 yanked = "deny"
 unmaintained = "all"
 unsound = "all"
@@ -55,6 +60,7 @@ allow = []
 deny = []
 skip = []
 skip-tree = []
+
 
 [sources]
 unknown-registry = "deny"
