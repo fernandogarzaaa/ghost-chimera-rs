@@ -50,12 +50,7 @@ exceptions = []
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
-
-[bans.workspace-dependencies]
-duplicates = "warn"
-include-path-dependencies = true
-unused = "warn"
-
+workspace-dependencies = { duplicates = "warn", include-path-dependencies = true, unused = "warn" }
 allow = []
 deny = []
 skip = []
