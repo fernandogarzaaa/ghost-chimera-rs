@@ -20,8 +20,8 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 # Fail the build on yanked/unmaintained/unsound deps; warn-only would
 # let supply-chain rot accumulate silently.
 yanked = "deny"
-unmaintained = "warn"
-unsound = "deny"
+unmaintained = "all"
+unsound = "all"
 ignore = []
 
 [licenses]
@@ -50,7 +50,12 @@ exceptions = []
 multiple-versions = "warn"
 wildcards = "allow"
 highlight = "all"
-workspace-dependencies = "warn"
+
+[bans.workspace-dependencies]
+duplicates = "warn"
+include-path-dependencies = true
+unused = "warn"
+
 allow = []
 deny = []
 skip = []
