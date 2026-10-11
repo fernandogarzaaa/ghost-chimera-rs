@@ -165,6 +165,7 @@ mod tests {
     struct FakeProvider {
         calls: AtomicUsize,
         fail: bool,
+        available: bool,
     }
 
     impl FakeProvider {
@@ -172,6 +173,15 @@ mod tests {
             Arc::new(Self {
                 calls: AtomicUsize::new(0),
                 fail,
+                available: true,
+            })
+        }
+
+        fn unavailable() -> Arc<Self> {
+            Arc::new(Self {
+                calls: AtomicUsize::new(0),
+                fail: false,
+                available: false,
             })
         }
     }
@@ -195,7 +205,7 @@ mod tests {
             vec!["fake-issue".to_string()]
         }
         fn is_available(&self) -> bool {
-            true
+            self.available
         }
     }
 
@@ -290,6 +300,13 @@ mod tests {
         assert!(metered.is_available());
         assert_eq!(metered.validate_config(), vec!["fake-issue".to_string()]);
         assert_eq!(metered.pricing(), PRICE);
+    }
+
+    #[test]
+    fn availability_follows_the_inner_provider() {
+        let (_dir, ledger) = ledger();
+        let metered = MeteredProvider::new(FakeProvider::unavailable(), ledger, PRICE);
+        assert!(!metered.is_available());
     }
 
     #[test]

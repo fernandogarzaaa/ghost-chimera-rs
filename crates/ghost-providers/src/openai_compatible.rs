@@ -366,6 +366,18 @@ mod tests {
     }
 
     #[test]
+    fn model_reports_the_configured_model() {
+        let spec = OpenAiCompatibleProvider::spec_for("groq").expect("groq exists");
+        let provider = OpenAiCompatibleProvider::with_credentials(
+            spec,
+            "k".to_string(),
+            "groq-test-model".to_string(),
+            None,
+        );
+        assert_eq!(provider.model(), "groq-test-model");
+    }
+
+    #[test]
     fn provider_table_covers_24_entries() {
         assert_eq!(PROVIDER_SPECS.len(), 24);
         for spec in PROVIDER_SPECS {

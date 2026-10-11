@@ -269,10 +269,35 @@ mod tests {
         assert!(!is_loopback_host(""));
     }
 
+    /// Run `serve` and require it to return promptly. A refusal must never
+    /// bind and serve forever; bounding the wait turns a fail-open
+    /// regression into a test failure instead of a hung test run.
+    async fn serve_promptly(host: &str, token: Option<String>) -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            serve(host, 0, token, dir.path().to_path_buf()),
+        )
+        .await
+        .expect("serve must refuse immediately, not bind and keep serving")
+    }
+
+    /// Start `serve` and require it to still be running (bound) shortly after.
+    async fn assert_serve_binds(host: &'static str, token: Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let handle = tokio::spawn(async move { serve(host, 0, token, state_dir).await });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(
+            !handle.is_finished(),
+            "serve on {host} should still be running after a successful bind"
+        );
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn non_loopback_bind_without_token_refuses() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = serve("0.0.0.0", 8766, None, dir.path().to_path_buf())
+        let err = serve_promptly("0.0.0.0", None)
             .await
             .expect_err("must refuse");
         assert!(
@@ -294,6 +319,11 @@ mod tests {
         assert_eq!(addr.to_string(), "[::1]:8766");
         let err = bind_addr("not a host!!", 1).expect_err("must fail");
         assert!(err.to_string().contains("invalid bind address"));
+    }
+
+    #[tokio::test]
+    async fn loopback_serve_without_token_binds_in_open_mode() {
+        assert_serve_binds("127.0.0.1", None).await;
     }
 
     #[tokio::test]
@@ -536,15 +566,9 @@ mod tests {
 
     #[tokio::test]
     async fn non_loopback_bind_with_blank_token_refuses() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = serve(
-            "0.0.0.0",
-            8766,
-            Some("   ".to_string()),
-            dir.path().to_path_buf(),
-        )
-        .await
-        .expect_err("blank token is no token");
+        let err = serve_promptly("0.0.0.0", Some("   ".to_string()))
+            .await
+            .expect_err("blank token is no token");
         assert!(err.to_string().contains("refusing to bind non-loopback"));
     }
 
@@ -565,6 +589,8 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"ab"));
         assert!(constant_time_eq(b"", b""));
+        // Equal per-byte differences must not cancel out (| vs ^ fold).
+        assert!(!constant_time_eq(b"ab", b"ba"));
     }
 
     #[test]

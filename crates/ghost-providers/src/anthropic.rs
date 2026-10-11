@@ -121,6 +121,16 @@ impl ModelProvider for AnthropicProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_reports_the_configured_model() {
+        let provider = AnthropicProvider::with_credentials(
+            "k".to_string(),
+            "claude-test-model".to_string(),
+            None,
+        );
+        assert_eq!(provider.model(), "claude-test-model");
+    }
     use std::io::{Read, Write};
     use std::net::TcpListener;
     use std::thread;

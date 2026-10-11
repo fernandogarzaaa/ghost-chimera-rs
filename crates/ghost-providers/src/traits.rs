@@ -27,3 +27,31 @@ pub trait ModelProvider: Send + Sync {
     /// True when credentials are present (no network check).
     fn is_available(&self) -> bool;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider that does not override `model()`.
+    struct Bare;
+
+    impl ModelProvider for Bare {
+        fn name(&self) -> &str {
+            "bare"
+        }
+        fn chat(&self, _system: &str, _user: &str) -> Result<String, ProviderError> {
+            Ok(String::new())
+        }
+        fn validate_config(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn is_available(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn default_model_is_unknown() {
+        assert_eq!(Bare.model(), "unknown");
+    }
+}
