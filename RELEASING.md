@@ -80,9 +80,9 @@ To add a secret: repo Settings > Secrets and variables > Actions.
   workflow writes `latest.yml` (and `-mac.yml`, `-linux.yml`) to the
   GitHub Release. **Do not rename or delete these assets**; the updater
   fetches them by name.
-- The app side needs `electron-updater` wired into `main.js`
-  (Phase 4 work): check on launch, prompt before installing, `stable`
-  channel only for v1.0. No beta channel until asked.
+- The desktop shell wires `electron-updater` into `main.js`: check on launch,
+  prompt before downloading, and prompt before restart/install. Verify the
+  feed and release manifests on the Rust workspace repository before publishing.
 - Rollback story: GitHub Releases keeps every version's assets, so a
   bad release is reverted by publishing a fixed version, never by
   deleting the release (deleting breaks clients mid-update).
@@ -137,7 +137,7 @@ NOT verified here (needs CI or a maintainer machine):
 - `cargo mutants --changed` flag behavior and exact summary wording
   (the gate script fails closed on drift, but the first green CI run
   should be eyeballed).
-- Electron packaging (`npm install` needs the Electron binary
+- Electron packaging (`npm ci` needs the Electron binary
   download; needs a real runner per OS).
 - The `${arch}` macro in the macOS `extraResources` path: believed
   correct per electron-builder docs; verify on the first mac release.
