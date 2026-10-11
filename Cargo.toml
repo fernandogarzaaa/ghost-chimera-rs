@@ -1,0 +1,39 @@
+[workspace]
+members = [
+    "crates/ghost-core",
+    "crates/ghost-trust",
+    "crates/ghost-stealth",
+    "crates/ghost-providers",
+    "crates/ghost-pilot",
+    "crates/ghost-console-api",
+    "crates/ghost-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2021"
+license = "MIT"
+authors = ["Fernando Garza <fernandogarzaaa@gmail.com>"]
+repository = "https://github.com/fernandogarzaaa/GHOST-Chimera"
+
+[workspace.dependencies]
+ghost-core = { path = "crates/ghost-core" }
+ghost-trust = { path = "crates/ghost-trust" }
+ghost-stealth = { path = "crates/ghost-stealth" }
+ghost-providers = { path = "crates/ghost-providers" }
+ghost-pilot = { path = "crates/ghost-pilot" }
+ghost-console-api = { path = "crates/ghost-console-api" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+thiserror = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+sha1 = "0.10"
+sha2 = "0.10"
+regex = "1.10"
+tokio = { version = "1.40", features = ["full"] }
+tracing = "0.1"
+dirs = "5.0"
+axum = { version = "0.7", features = ["json"] }
+tower = { version = "0.4", features = ["util"] }
+clap = { version = "4.5", features = ["derive"] }

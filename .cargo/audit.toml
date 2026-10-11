@@ -1,0 +1,9 @@
+# cargo-audit configuration.
+# https://rustsec.org/
+#
+# Lives at .cargo/audit.toml (cargo-audit's conventional location).
+# Add entries to [advisories] ignore ONLY with a dated comment naming
+# the reason and the tracking issue; ignored advisories are tech debt.
+
+[advisories]
+ignore = []

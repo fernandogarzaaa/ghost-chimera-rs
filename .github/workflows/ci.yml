@@ -1,0 +1,110 @@
+# GHOST-Chimera Rust: continuous integration.
+#
+# Fast jobs (fmt, clippy, test, supply-chain) gate every PR.
+# The mutation job runs separately and does NOT block merge on infra
+# slowness alone, but its 80% kill-rate gate is enforced: a red
+# mutation gate is a failing check that must be fixed or explicitly
+# waived by Inan.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref to keep CI fast and cheap.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint with clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and test workspace
+        run: cargo test --workspace --all-features
+
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+      - name: Check licenses, bans, advisories
+        run: cargo deny check
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Audit for known vulnerabilities
+        run: cargo audit --deny warnings
+
+  mutants:
+    name: mutation-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      # Full history is required so `cargo mutants --changed` can compute
+      # the merge-base against the default branch.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-mutants
+        run: cargo install cargo-mutants --locked
+      - name: Run mutation gate (80% kill rate on changed code)
+        run: python3 .github/scripts/mutation-gate.py --fail-under 80
+
+  desktop-lint:
+    name: desktop-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate desktop shell syntax
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('desktop/package.json', 'utf8')); console.log('package.json: valid JSON')"
+          node --check desktop/main.js && echo "main.js: syntax OK"
+          node --check desktop/preload.js && echo "preload.js: syntax OK"
+          python3 .github/scripts/check-version.py v$(node -e "console.log(JSON.parse(require('fs').readFileSync('desktop/package.json','utf8')).version)") --repo .

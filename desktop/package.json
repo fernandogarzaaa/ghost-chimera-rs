@@ -1,0 +1,94 @@
+{
+  "author": "Fernando Garza <fernandogarzaaa@gmail.com>",
+  "build": {
+    "appId": "com.ghostchimera.console",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "package.json"
+    ],
+    "linux": {
+      "category": "Utility",
+      "description": "Local-first console for GHOST-Chimera",
+      "extraResources": [
+        {
+          "filter": [
+            "ghost"
+          ],
+          "from": "sidecar/",
+          "to": "bin/"
+        }
+      ],
+      "maintainer": "Fernando Garza <fernandogarzaaa@gmail.com>",
+      "target": [
+        "AppImage",
+        "deb"
+      ]
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "extraResources": [
+        {
+          "from": "sidecar/mac-${arch}/",
+          "to": "bin/"
+        }
+      ],
+      "hardenedRuntime": true,
+      "target": [
+        "dmg"
+      ]
+    },
+    "nsis": {
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "oneClick": false,
+      "perMachine": false,
+      "shortcutName": "Ghost Console"
+    },
+    "productName": "Ghost Console",
+    "publish": {
+      "owner": "fernandogarzaaa",
+      "provider": "github",
+      "repo": "GHOST-Chimera"
+    },
+    "win": {
+      "extraResources": [
+        {
+          "filter": [
+            "*.exe"
+          ],
+          "from": "sidecar/",
+          "to": "bin/"
+        }
+      ],
+      "target": [
+        "nsis"
+      ]
+    }
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.0"
+  },
+  "description": "Ghost Console: desktop application for GHOST-Chimera",
+  "devDependencies": {
+    "electron": "^37.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "license": "MIT",
+  "main": "main.js",
+  "name": "ghost-console",
+  "repository": "github:fernandogarzaaa/GHOST-Chimera",
+  "scripts": {
+    "dist": "electron-builder",
+    "dist:dir": "electron-builder --dir",
+    "dist:linux": "electron-builder --linux",
+    "dist:mac": "electron-builder --mac --x64 --arm64",
+    "dist:win": "electron-builder --win",
+    "start": "electron ."
+  },
+  "version": "0.5.0"
+}

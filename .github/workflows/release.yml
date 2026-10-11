@@ -1,0 +1,224 @@
+# GHOST-Chimera Rust: release pipeline.
+#
+# Trigger: push a tag like `v0.5.0`. Only tag commits that are green on
+# main (see RELEASING.md). The tag version MUST match
+# [workspace.package] version in Cargo.toml and `version` in
+# desktop/package.json, enforced by the check-version job.
+#
+# What it produces:
+#   - Electron installers per OS (NSIS / dmg / AppImage+deb), published
+#     to the GitHub Release via electron-builder (which also writes the
+#     latest.yml auto-update manifest).
+#   - Raw Rust CLI binaries (zipped per target) attached to the release
+#     for headless/server use (`ghost console --no-open`).
+#
+# Signing: electron-builder signs automatically when the secrets below
+# exist; otherwise it builds UNSIGNED and logs a warning. See
+# RELEASING.md for the cert decisions.
+#   Windows: WINDOWS_CERT_PFX_BASE64, WINDOWS_CERT_PASSWORD
+#   macOS:   MAC_CERT_P12_BASE64, MAC_CERT_PASSWORD,
+#            APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-version:
+    name: version-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag matches Cargo.toml and desktop/package.json
+        run: python3 .github/scripts/check-version.py "${{ github.ref_name }}"
+
+  build-rust:
+    name: rust-${{ matrix.target }}
+    needs: [check-version]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            bin_ext: ".exe"
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bin_ext: ""
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            bin_ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bin_ext: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ${{ matrix.target }}
+      # Builds every binary target in the workspace. ghost-cli (Phase 3)
+      # provides the first binary; until a bin target exists, tagging a
+      # release is a mistake, so this fails fast with a clear message
+      # instead of publishing an empty release.
+      - name: Build release binaries
+        run: cargo build --release --workspace --bins --target ${{ matrix.target }}
+      - name: Stage binaries
+        id: stage
+        shell: bash
+        run: |
+          mkdir -p staged
+          found=0
+          for bin in target/${{ matrix.target }}/release/*${{ matrix.bin_ext }}; do
+            case "$bin" in
+              *.d|*.rlib|*.rmeta) continue ;;
+            esac
+            if [ -f "$bin" ] && [ -x "$bin" ]; then
+              cp "$bin" staged/
+              found=1
+            fi
+          done
+          if [ "$found" = "0" ]; then
+            echo "ERROR: no binaries produced for ${{ matrix.target }}." >&2
+            echo "A release needs at least one bin target (ghost-cli, Phase 3)." >&2
+            echo "Do not tag a release until then." >&2
+            exit 1
+          fi
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+          ls -la staged/
+      - name: Upload Rust binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-${{ matrix.target }}
+          path: staged/
+          retention-days: 7
+
+  electron:
+    name: electron-${{ matrix.os }}
+    needs: [check-version, build-rust]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            bin_name: "ghost.exe"
+            builder_args: "--win"
+          - os: macos-latest
+            rust_target: "both"
+            bin_name: "ghost"
+            builder_args: "--mac --x64 --arm64"
+          - os: ubuntu-latest
+            rust_target: x86_64-unknown-linux-gnu
+            bin_name: "ghost"
+            builder_args: "--linux"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package.json
+      # ---- stage the Rust sidecar binary(ies) for this platform ----
+      - name: Download Rust binary (single-arch)
+        if: matrix.rust_target != 'both'
+        uses: actions/download-artifact@v4
+        with:
+          name: rust-${{ matrix.rust_target }}
+          path: desktop/sidecar/
+      - name: Download Rust binaries (macOS universal set)
+        if: matrix.rust_target == 'both'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: rust-*-apple-darwin
+          path: desktop/sidecar-dl/
+          merge-multiple: false
+      - name: Arrange macOS sidecar layout
+        if: matrix.rust_target == 'both'
+        shell: bash
+        run: |
+          mkdir -p desktop/sidecar/mac-x64 desktop/sidecar/mac-arm64
+          cp desktop/sidecar-dl/rust-x86_64-apple-darwin/ghost desktop/sidecar/mac-x64/ghost
+          cp desktop/sidecar-dl/rust-aarch64-apple-darwin/ghost desktop/sidecar/mac-arm64/ghost
+          chmod +x desktop/sidecar/mac-x64/ghost desktop/sidecar/mac-arm64/ghost
+          rm -rf desktop/sidecar-dl
+      - name: Sync package.json version from tag
+        shell: bash
+        run: |
+          node -e "
+            const fs = require('fs');
+            const p = 'desktop/package.json';
+            const pkg = JSON.parse(fs.readFileSync(p, 'utf8'));
+            pkg.version = '${{ github.ref_name }}'.replace(/^v/, '');
+            fs.writeFileSync(p, JSON.stringify(pkg, null, 2) + '\n');
+          "
+      # ---- optional code signing (skipped cleanly when secrets absent) ----
+      - name: Prepare Windows signing cert
+        if: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP "ghost-cert.pfx"
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX_BASE64 }}"))
+          "CSC_LINK=$pfx" >> $env:GITHUB_ENV
+      - name: Report signing status
+        shell: bash
+        run: |
+          if [ -n "${CSC_LINK:-}" ]; then echo "Code signing: ENABLED"; else echo "Code signing: DISABLED (no cert secret) - building unsigned"; fi
+      - name: Install desktop dependencies
+        working-directory: desktop
+        run: npm install
+      - name: Build and publish installers
+        working-directory: desktop
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npx electron-builder ${{ matrix.builder_args }} --publish always
+
+  upload-cli:
+    name: upload-cli-binaries
+    needs: [electron]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: rust-*
+          path: rust-bins/
+          merge-multiple: false
+      - name: Zip per-target binaries
+        run: |
+          mkdir -p release-assets
+          for d in rust-bins/rust-*/; do
+            target=$(basename "$d" | sed 's/^rust-//')
+            (cd "$d" && zip -j "../../release-assets/ghost-${target}.zip" .)
+          done
+          ls -la release-assets/
+      - name: Attach CLI binaries to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release-assets/*

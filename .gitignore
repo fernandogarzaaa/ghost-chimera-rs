@@ -1,0 +1,20 @@
+# Rust build outputs
+/target/
+mutants.out/
+
+# Electron
+desktop/node_modules/
+desktop/dist/
+desktop/sidecar/
+desktop/sidecar-dl/
+
+# Env / secrets (never commit)
+.env
+*.pfx
+*.p12
+
+# OS noise
+.DS_Store
+Thumbs.db
+target/
+mutants.out*/

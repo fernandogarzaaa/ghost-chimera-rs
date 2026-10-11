@@ -1,0 +1,63 @@
+# cargo-deny configuration for GHOST-Chimera Rust.
+# https://embarkstudios.github.io/cargo-deny/
+#
+# Policy: local-first privacy product. We are strict about where code
+# comes from (crates.io only) and which licenses we accept.
+
+[graph]
+targets = [
+  "x86_64-unknown-linux-gnu",
+  "x86_64-pc-windows-msvc",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+]
+all-features = false
+no-default-features = false
+
+[advisories]
+db-path = "~/.cargo/advisory-dbs"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+# Fail the build on yanked/unmaintained/unsound deps; warn-only would
+# let supply-chain rot accumulate silently.
+yanked = "deny"
+unmaintained = "warn"
+unsound = "deny"
+ignore = []
+
+[licenses]
+# Copyleft licenses are not acceptable in this product: the desktop
+# app ships as a closed binary distribution and we do not want
+# GPL-2.0/3.0 obligations on the bundle.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-DFS-2016",
+  "Unicode-3.0",
+  "CC0-1.0",
+  "Zlib",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-dependencies = "warn"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

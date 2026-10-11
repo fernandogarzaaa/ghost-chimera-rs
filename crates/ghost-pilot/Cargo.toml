@@ -1,0 +1,18 @@
+[package]
+name = "ghost-pilot"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "ChimeraPilotKernel for GHOST-Chimera: task compilation, backend selection, honest execution"
+
+[dependencies]
+ghost-core = { workspace = true }
+ghost-providers = { path = "../ghost-providers" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3.10"
