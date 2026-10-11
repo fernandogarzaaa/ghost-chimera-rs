@@ -326,9 +326,8 @@ mod tests {
         // Loopback + no token must bind successfully (open dev mode).
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().to_path_buf();
-        let handle = tokio::spawn(async move {
-            serve("127.0.0.1", 0, None, state_dir).await
-        });
+        let handle =
+            tokio::spawn(async move { serve("127.0.0.1", 0, None, state_dir).await });
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         assert!(
             !handle.is_finished(),
@@ -343,9 +342,9 @@ mod tests {
         // Kills mutants that invert the guard condition.
         let dir = tempfile::tempdir().unwrap();
         let state_dir = dir.path().to_path_buf();
-        let handle = tokio::spawn(async move {
-            serve("0.0.0.0", 0, Some("tok".to_string()), state_dir).await
-        });
+        let handle = tokio::spawn(
+            async move { serve("0.0.0.0", 0, Some("tok".to_string()), state_dir).await },
+        );
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         assert!(
             !handle.is_finished(),
