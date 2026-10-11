@@ -21,6 +21,9 @@
 
 name: Release
 
+permissions:
+  contents: read
+
 on:
   push:
     tags:
@@ -45,6 +48,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - name: Verify tag matches Cargo.toml and desktop/package.json
         run: python3 .github/scripts/check-version.py "${{ inputs.tag || github.ref_name }}"
 
@@ -71,16 +76,15 @@ jobs:
             bin_ext: ""
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ${{ matrix.target }}
-      # Builds every binary target in the workspace. ghost-cli (Phase 3)
-      # provides the first binary; until a bin target exists, tagging a
-      # release is a mistake, so this fails fast with a clear message
-      # instead of publishing an empty release.
+      # Build the workspace binaries for each supported target.
       - name: Build release binaries
         run: cargo build --release --workspace --bins --target ${{ matrix.target }}
       - name: Stage binaries
@@ -100,8 +104,8 @@ jobs:
           done
           if [ "$found" = "0" ]; then
             echo "ERROR: no binaries produced for ${{ matrix.target }}." >&2
-            echo "A release needs at least one bin target (ghost-cli, Phase 3)." >&2
-            echo "Do not tag a release until then." >&2
+            echo "A release must produce at least one executable binary." >&2
+            echo "Inspect the target build and binary staging rules." >&2
             exit 1
           fi
           echo "found=$found" >> "$GITHUB_OUTPUT"
@@ -138,6 +142,8 @@ jobs:
             builder_args: "--linux"
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -193,7 +199,7 @@ jobs:
           if [ -n "${CSC_LINK:-}" ]; then echo "Code signing: ENABLED"; else echo "Code signing: DISABLED (no cert secret) - building unsigned"; fi
       - name: Install desktop dependencies
         working-directory: desktop
-        run: npm install
+        run: npm ci
       - name: Build and publish installers
         working-directory: desktop
         env:
