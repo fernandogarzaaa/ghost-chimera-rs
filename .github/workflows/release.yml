@@ -178,11 +178,14 @@ jobs:
           "
       # ---- optional code signing (skipped cleanly when secrets absent) ----
       - name: Prepare Windows signing cert
-        if: ${{ matrix.os == 'windows-latest' && secrets.WINDOWS_CERT_PFX_BASE64 != '' }}
+        if: matrix.os == 'windows-latest'
         shell: pwsh
+        env:
+          CERT_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
         run: |
+          if ([string]::IsNullOrEmpty($env:CERT_B64)) { echo "No cert, skipping signing"; exit 0 }
           $pfx = Join-Path $env:RUNNER_TEMP "ghost-cert.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String("${{ secrets.WINDOWS_CERT_PFX_BASE64 }}"))
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_B64))
           "CSC_LINK=$pfx" >> $env:GITHUB_ENV
       - name: Report signing status
         shell: bash
