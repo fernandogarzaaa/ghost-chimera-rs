@@ -149,12 +149,10 @@ async fn auth_middleware(
 
 /// Build the console router. Returns the router and the API route count.
 ///
-/// Static files are mounted on `/*path` with an absolute path derived from
-/// `CARGO_MANIFEST_DIR` (the `./static` directory copied next to this
-/// crate). Note: axum's `nest_service` rejects wildcard paths, so the
-/// static mount uses a `/*path` route to the [`routes::static_file`]
-/// handler instead — same behavior (all unmatched paths resolve under
-/// `./static`, including `/index.html`).
+/// The console UI (`./static`) is embedded into the binary at compile time
+/// (`include_bytes!`), so released binaries serve it without any files on
+/// disk. Unmatched paths go to [`routes::static_file`], which serves only
+/// exact embedded file names and never touches the filesystem.
 pub fn router(state: AppState) -> (Router, usize) {
     let api_routes: Vec<(&str, axum::routing::MethodRouter<AppState>)> = vec![
         ("/console/status", get(routes::status_handler)),
