@@ -8,6 +8,8 @@ checklist in SPEC.md section 7 to be fully green).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-12
+
 ### Security
 - Console: whitespace-only tokens count as no token; tokens are compared in
   constant time. Tokenless (loopback-only) mode rejects non-loopback `Host`
