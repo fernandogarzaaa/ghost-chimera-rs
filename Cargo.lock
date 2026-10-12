@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-cli"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "clap",
  "ghost-console-api",
@@ -522,7 +522,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-console-api"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "axum",
  "chrono",
@@ -541,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "dirs",
@@ -556,7 +556,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-pilot"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "ghost-core",
  "ghost-providers",
@@ -569,7 +569,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-providers"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "ghost-core",
@@ -582,7 +582,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-stealth"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "clap",
@@ -597,7 +597,7 @@ dependencies = [
 
 [[package]]
 name = "ghost-trust"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "chrono",
  "ghost-core",
