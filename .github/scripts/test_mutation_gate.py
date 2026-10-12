@@ -120,5 +120,30 @@ class ReadCountsTest(unittest.TestCase):
                 gate.git_diff(base)
 
 
+class TestOnlySkipTest(unittest.TestCase):
+    """main's 4ab28c3 rule: a test-only diff skips the gate instead of failing."""
+
+    def test_no_mutants_to_filter_is_test_only(self) -> None:
+        self.assertTrue(gate.is_test_only("Found 12 mutants\nNo mutants to filter\n"))
+
+    def test_normal_output_is_not_test_only(self) -> None:
+        self.assertFalse(gate.is_test_only("Found 12 mutants to test\n12 mutants tested: 12 caught\n"))
+        self.assertFalse(gate.is_test_only(""))
+
+    def test_main_skips_on_test_only_diff(self) -> None:
+        orig_diff, orig_run = gate.git_diff, gate.run_mutants
+        try:
+            gate.git_diff = lambda base: "diff --git a/src/lib.rs b/src/lib.rs\n"
+            gate.run_mutants = lambda out, diff, jobs: (0, "No mutants to filter")
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(gate.main(["--output-dir", tmp]), 0)
+            # A real run with no outcomes still fails closed.
+            gate.run_mutants = lambda out, diff, jobs: (0, "Found 3 mutants to test")
+            with tempfile.TemporaryDirectory() as tmp:
+                self.assertEqual(gate.main(["--output-dir", tmp]), 1)
+        finally:
+            gate.git_diff, gate.run_mutants = orig_diff, orig_run
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -95,7 +95,7 @@ def git_diff(base_ref: str) -> str:
     return proc.stdout
 
 
-def run_mutants(output_dir: Path, diff_path: Path, jobs: int) -> int:
+def run_mutants(output_dir: Path, diff_path: Path, jobs: int) -> tuple[int, str]:
     proc = subprocess.run(
         [
             "cargo",
@@ -111,8 +111,21 @@ def run_mutants(output_dir: Path, diff_path: Path, jobs: int) -> int:
             "never",
         ],
         text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
     )
-    return proc.returncode
+    print(proc.stdout)
+    return proc.returncode, proc.stdout or ""
+
+
+def is_test_only(cargo_mutants_output: str) -> bool:
+    """True when cargo-mutants reports the diff touched no mutable source.
+
+    If only test code changed (e.g. a ``#[cfg(test)]`` module or tests/),
+    cargo-mutants prints "No mutants to filter". That is not a failure: there
+    is no source code to mutate. (Rule kept from main, commit 4ab28c3.)
+    """
+    return "No mutants to filter" in cargo_mutants_output
 
 
 def _is_mutant(entry: dict) -> bool:
@@ -218,22 +231,11 @@ def main(argv: list[str] | None = None) -> int:
     with tempfile.TemporaryDirectory(prefix="ghost-mutants-") as temp_dir:
         diff_path = Path(temp_dir) / "changed-rust.diff"
         diff_path.write_text(diff, encoding="utf-8")
-<<<<<<< HEAD
-        proc = run_mutants(output_dir, diff_path)
-    print(proc.stdout)
-
-    # If only test files changed, cargo-mutants finds no mutants to filter.
-    # This is not a failure; there's no source code to mutate.
-    if "No mutants to filter" in proc.stdout:
+        code, output = run_mutants(output_dir, diff_path, args.jobs)
+    if is_test_only(output):
         print("MUTATION GATE SKIPPED: no source mutants in diff (test-only changes).")
         return 0
-
-    parsed = parse_summary(proc.stdout)
-    if parsed is None:
-=======
-        code = run_mutants(output_dir, diff_path, args.jobs)
     if code not in OK_EXIT_CODES:
->>>>>>> 8778f08 (ci(mutation-gate): parse cargo-mutants 27.x outcomes.json correctly)
         print(
             f"MUTATION GATE FAILED: cargo-mutants exited {code} "
             "(usage error, failing baseline, bad diff, or internal error).",
