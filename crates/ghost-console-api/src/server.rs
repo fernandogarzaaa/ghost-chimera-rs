@@ -9,6 +9,14 @@
 //!   When no token is configured the API is open — a deliberate
 //!   loopback-only dev convenience, only reachable because `serve()`
 //!   keeps the socket on localhost in that mode.
+//! - A whitespace-only token counts as *no* token (it used to satisfy
+//!   the fail-closed check while being trivially guessable).
+//! - Tokens are compared in constant time.
+//! - Open (tokenless) mode also rejects browser requests that are not
+//!   addressed to and coming from loopback (GAP [security/m2]): a
+//!   non-loopback `Host` header (DNS rebinding) or a non-loopback
+//!   `Origin` (cross-site drive-by POST from any web page) gets 403.
+//!   Requests without these headers (curl, the CLI, tests) are allowed.
 
 use axum::{
     extract::State,
@@ -38,6 +46,65 @@ pub fn is_loopback_host(host: &str) -> bool {
     matches!(bare, "127.0.0.1" | "::1" | "localhost")
 }
 
+/// Normalize a configured console token: trimmed, and blank means none.
+pub fn normalize_token(token: Option<String>) -> Option<String> {
+    token
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+}
+
+/// Constant-time byte comparison (length is not secret).
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Host part of a `Host` header value (`host`, `host:port`, `[v6]:port`).
+fn host_without_port(value: &str) -> &str {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix('[') {
+        // [::1]:8766 -> ::1
+        return rest.split(']').next().unwrap_or("");
+    }
+    match value.rsplit_once(':') {
+        // Exactly one colon: host:port. More than one: bare IPv6.
+        Some((host, _port)) if !host.contains(':') => host,
+        _ => value,
+    }
+}
+
+/// True when a `Host` header names a loopback host (any port).
+pub fn is_loopback_host_header(value: &str) -> bool {
+    is_loopback_host(host_without_port(value))
+}
+
+/// True when an `Origin` header is `http(s)://<loopback>[:port]`.
+/// The opaque origin `null` (sandboxed iframes, `file:`) is NOT loopback.
+pub fn is_loopback_origin(value: &str) -> bool {
+    let value = value.trim();
+    let rest = match value
+        .strip_prefix("http://")
+        .or_else(|| value.strip_prefix("https://"))
+    {
+        Some(rest) => rest,
+        None => return false,
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    !authority.contains('@') && is_loopback_host_header(authority)
+}
+
+/// Open-mode browser guard: reject DNS-rebinding and cross-site requests.
+fn open_mode_request_allowed(headers: &axum::http::HeaderMap) -> bool {
+    let header_ok = |name: header::HeaderName, check: fn(&str) -> bool| match headers.get(name) {
+        None => true,
+        Some(value) => value.to_str().map(check).unwrap_or(false),
+    };
+    header_ok(header::HOST, is_loopback_host_header)
+        && header_ok(header::ORIGIN, is_loopback_origin)
+}
+
 /// Bearer-token gate for all `/api/*` routes.
 ///
 /// When `state.token` is `Some` and non-empty, requests must carry
@@ -49,18 +116,26 @@ async fn auth_middleware(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
-    let token = state.token.as_deref().unwrap_or("");
-    let authorized = if token.is_empty() {
-        true // open dev mode; serve() keeps this on loopback only
-    } else {
-        request
-            .headers()
-            .get(header::AUTHORIZATION)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.strip_prefix("Bearer "))
-            .map(|presented| presented == token)
-            .unwrap_or(false)
-    };
+    let token = state.token.as_deref().map(str::trim).unwrap_or("");
+    if token.is_empty() {
+        // Open dev mode; serve() keeps this on loopback only. Still refuse
+        // requests a hostile web page could make through the browser.
+        if !open_mode_request_allowed(request.headers()) {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({"ok": false, "error": "forbidden: non-loopback host or origin"})),
+            )
+                .into_response();
+        }
+        return next.run(request).await;
+    }
+    let authorized = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .map(|presented| constant_time_eq(presented.trim().as_bytes(), token.as_bytes()))
+        .unwrap_or(false);
     if authorized {
         next.run(request).await
     } else {
@@ -74,12 +149,10 @@ async fn auth_middleware(
 
 /// Build the console router. Returns the router and the API route count.
 ///
-/// Static files are mounted on `/*path` with an absolute path derived from
-/// `CARGO_MANIFEST_DIR` (the `./static` directory copied next to this
-/// crate). Note: axum's `nest_service` rejects wildcard paths, so the
-/// static mount uses a `/*path` route to the [`routes::static_file`]
-/// handler instead — same behavior (all unmatched paths resolve under
-/// `./static`, including `/index.html`).
+/// The console UI (`./static`) is embedded into the binary at compile time
+/// (`include_bytes!`), so released binaries serve it without any files on
+/// disk. Unmatched paths go to [`routes::static_file`], which serves only
+/// exact embedded file names and never touches the filesystem.
 pub fn router(state: AppState) -> (Router, usize) {
     let api_routes: Vec<(&str, axum::routing::MethodRouter<AppState>)> = vec![
         ("/console/status", get(routes::status_handler)),
@@ -151,7 +224,8 @@ fn bind_addr(host: &str, port: u16) -> Result<SocketAddr> {
 /// FAIL-CLOSED (GAP [security/C1]): when `host` is not a loopback address
 /// and no `token` is provided, this returns an error WITHOUT binding.
 pub async fn serve(host: &str, port: u16, token: Option<String>, state_dir: PathBuf) -> Result<()> {
-    if !is_loopback_host(host) && token.as_deref().unwrap_or("").is_empty() {
+    let token = normalize_token(token);
+    if !is_loopback_host(host) && token.is_none() {
         return Err(GhostError::Config(
             "refusing to bind non-loopback address without a console token (set GHOST_CONSOLE_TOKEN or --token)".to_string(),
         ));
@@ -195,10 +269,35 @@ mod tests {
         assert!(!is_loopback_host(""));
     }
 
+    /// Run `serve` and require it to return promptly. A refusal must never
+    /// bind and serve forever; bounding the wait turns a fail-open
+    /// regression into a test failure instead of a hung test run.
+    async fn serve_promptly(host: &str, token: Option<String>) -> Result<()> {
+        let dir = tempfile::tempdir().unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            serve(host, 0, token, dir.path().to_path_buf()),
+        )
+        .await
+        .expect("serve must refuse immediately, not bind and keep serving")
+    }
+
+    /// Start `serve` and require it to still be running (bound) shortly after.
+    async fn assert_serve_binds(host: &'static str, token: Option<String>) {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().to_path_buf();
+        let handle = tokio::spawn(async move { serve(host, 0, token, state_dir).await });
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        assert!(
+            !handle.is_finished(),
+            "serve on {host} should still be running after a successful bind"
+        );
+        handle.abort();
+    }
+
     #[tokio::test]
     async fn non_loopback_bind_without_token_refuses() {
-        let dir = tempfile::tempdir().unwrap();
-        let err = serve("0.0.0.0", 8766, None, dir.path().to_path_buf())
+        let err = serve_promptly("0.0.0.0", None)
             .await
             .expect_err("must refuse");
         assert!(
@@ -220,6 +319,11 @@ mod tests {
         assert_eq!(addr.to_string(), "[::1]:8766");
         let err = bind_addr("not a host!!", 1).expect_err("must fail");
         assert!(err.to_string().contains("invalid bind address"));
+    }
+
+    #[tokio::test]
+    async fn loopback_serve_without_token_binds_in_open_mode() {
+        assert_serve_binds("127.0.0.1", None).await;
     }
 
     #[tokio::test]
@@ -458,5 +562,135 @@ mod tests {
         // Unknown order -> 404.
         let (status, _) = post(&router, "/api/standing-orders/nope/enable", "{}").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn non_loopback_bind_with_blank_token_refuses() {
+        let err = serve_promptly("0.0.0.0", Some("   ".to_string()))
+            .await
+            .expect_err("blank token is no token");
+        assert!(err.to_string().contains("refusing to bind non-loopback"));
+    }
+
+    #[test]
+    fn normalize_token_trims_and_drops_blank() {
+        assert_eq!(normalize_token(None), None);
+        assert_eq!(normalize_token(Some(String::new())), None);
+        assert_eq!(normalize_token(Some(" \t ".to_string())), None);
+        assert_eq!(
+            normalize_token(Some(" abc ".to_string())),
+            Some("abc".to_string())
+        );
+    }
+
+    #[test]
+    fn constant_time_eq_semantics() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+        assert!(constant_time_eq(b"", b""));
+        // Equal per-byte differences must not cancel out (| vs ^ fold).
+        assert!(!constant_time_eq(b"ab", b"ba"));
+    }
+
+    #[test]
+    fn host_header_loopback_detection() {
+        assert!(is_loopback_host_header("127.0.0.1"));
+        assert!(is_loopback_host_header("127.0.0.1:8766"));
+        assert!(is_loopback_host_header("localhost:3000"));
+        assert!(is_loopback_host_header("[::1]:8766"));
+        assert!(is_loopback_host_header("::1"));
+        assert!(!is_loopback_host_header("evil.example:8766"));
+        assert!(!is_loopback_host_header("127.0.0.1.evil.example"));
+        assert!(!is_loopback_host_header("[::2]:80"));
+        assert_eq!(host_without_port("a:1"), "a");
+        assert_eq!(host_without_port("[::1]:9"), "::1");
+        assert_eq!(host_without_port("::1"), "::1");
+        assert_eq!(host_without_port(" a "), "a");
+    }
+
+    #[test]
+    fn origin_loopback_detection() {
+        assert!(is_loopback_origin("http://127.0.0.1:8766"));
+        assert!(is_loopback_origin("http://localhost"));
+        assert!(is_loopback_origin("https://[::1]:8443"));
+        assert!(!is_loopback_origin("null"));
+        assert!(!is_loopback_origin("file://"));
+        assert!(!is_loopback_origin("https://evil.example"));
+        assert!(!is_loopback_origin("http://localhost.evil.example"));
+        assert!(!is_loopback_origin("http://127.0.0.1@evil.example"));
+    }
+
+    async fn status_with_headers(token: Option<&str>, headers: &[(&str, &str)]) -> StatusCode {
+        let (_dir, state) = test_state_with_token(token);
+        let (router, _count) = router(state);
+        let mut builder = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/standing-orders/nope/run");
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
+        let response = router
+            .oneshot(builder.body(axum::body::Body::empty()).unwrap())
+            .await
+            .unwrap();
+        response.status()
+    }
+
+    #[tokio::test]
+    async fn open_mode_rejects_cross_site_and_rebinding_requests_m2() {
+        // Drive-by POST from a web page.
+        assert_eq!(
+            status_with_headers(None, &[("origin", "https://evil.example")]).await,
+            StatusCode::FORBIDDEN
+        );
+        // DNS rebinding: request reaches loopback with the attacker's Host.
+        assert_eq!(
+            status_with_headers(None, &[("host", "evil.example:8766")]).await,
+            StatusCode::FORBIDDEN
+        );
+        // Opaque origin.
+        assert_eq!(
+            status_with_headers(None, &[("origin", "null")]).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn open_mode_allows_same_origin_ui_and_headerless_clients() {
+        // The console UI / Electron shell: loopback Host + Origin.
+        assert_eq!(
+            status_with_headers(
+                None,
+                &[
+                    ("host", "127.0.0.1:8766"),
+                    ("origin", "http://127.0.0.1:8766")
+                ]
+            )
+            .await,
+            StatusCode::NOT_FOUND // reached the handler: unknown order id
+        );
+        // curl / CLI: no Origin.
+        assert_eq!(
+            status_with_headers(None, &[("host", "localhost:8766")]).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(status_with_headers(None, &[]).await, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn token_mode_requires_exact_token() {
+        assert_eq!(
+            status_with_headers(Some("s3cret"), &[("authorization", "Bearer s3cre")]).await,
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            status_with_headers(Some("s3cret"), &[("authorization", "Bearer s3cret")]).await,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            status_with_headers(Some("s3cret"), &[("authorization", "s3cret")]).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 }

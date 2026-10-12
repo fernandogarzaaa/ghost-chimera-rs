@@ -153,6 +153,13 @@ impl CostLedger {
         price_in_per_1k: f64,
         price_out_per_1k: f64,
     ) -> Result<f64, GhostError> {
+        for (label, price) in [("input", price_in_per_1k), ("output", price_out_per_1k)] {
+            if !price.is_finite() || price < 0.0 {
+                return Err(GhostError::Config(format!(
+                    "{label} price for {provider} must be finite and non-negative (got {price})"
+                )));
+            }
+        }
         let in_tokens = input_tokens.unwrap_or_else(|| estimate_tokens(input_text));
         let out_tokens = output_tokens.unwrap_or_else(|| estimate_tokens(output_text));
         let cost = (in_tokens as f64 / 1000.0) * price_in_per_1k
@@ -173,7 +180,21 @@ impl CostLedger {
     }
 
     /// Set a per-provider budget cap (persisted immediately).
+    ///
+    /// The cap must be a finite, non-negative USD amount: a NaN cap would
+    /// make every `spent >= cap` comparison false and silently disable the
+    /// guard, so it is refused instead.
     pub fn set_budget(&self, provider: &str, usd: f64) -> Result<(), GhostError> {
+        if provider.trim().is_empty() {
+            return Err(GhostError::Config(
+                "budget provider id is empty".to_string(),
+            ));
+        }
+        if !usd.is_finite() || usd < 0.0 {
+            return Err(GhostError::Config(format!(
+                "budget for {provider} must be a finite, non-negative USD amount (got {usd})"
+            )));
+        }
         let entry = JournalEntry::Budget {
             provider: provider.to_string(),
             usd,
@@ -242,6 +263,50 @@ impl CostLedger {
             .get(provider)
             .map(|q| q.iter().copied().collect())
             .unwrap_or_default()
+    }
+}
+
+/// Per-provider totals, as reported by [`CostLedger::snapshot`].
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ProviderSpend {
+    /// Provider id.
+    pub provider: String,
+    /// Total spend in USD.
+    pub spend_usd: f64,
+    /// Number of journaled calls.
+    pub calls: u64,
+    /// Total input tokens.
+    pub input_tokens: u64,
+    /// Total output tokens.
+    pub output_tokens: u64,
+    /// Budget cap in USD, when one is set.
+    pub budget_usd: Option<f64>,
+}
+
+impl CostLedger {
+    /// Totals for every provider seen in the journal (spend or budget),
+    /// sorted by provider id.
+    pub fn snapshot(&self) -> Vec<ProviderSpend> {
+        let state = self.state.lock().expect("ledger lock");
+        let mut names: Vec<&String> = state.spend.keys().chain(state.budgets.keys()).collect();
+        names.sort();
+        names.dedup();
+        names
+            .into_iter()
+            .map(|name| ProviderSpend {
+                provider: name.clone(),
+                spend_usd: state.spend.get(name).copied().unwrap_or(0.0),
+                calls: state.calls.get(name).copied().unwrap_or(0),
+                input_tokens: state.tokens_in.get(name).copied().unwrap_or(0),
+                output_tokens: state.tokens_out.get(name).copied().unwrap_or(0),
+                budget_usd: state.budgets.get(name).copied(),
+            })
+            .collect()
+    }
+
+    /// Path of the JSONL journal backing this ledger.
+    pub fn journal_path(&self) -> &Path {
+        &self.journal_path
     }
 }
 
@@ -356,5 +421,66 @@ mod tests {
             .record("b", "m", "", "", Some(1000), Some(0), None, 1.0, 0.0)
             .expect("record");
         assert!((ledger.daily_spend() - 2.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn invalid_budgets_are_refused_and_not_persisted() {
+        let (dir, ledger) = open_ledger();
+        for bad in [f64::NAN, f64::INFINITY, -0.01] {
+            let err = ledger.set_budget("groq", bad).expect_err("must refuse");
+            assert!(matches!(err, GhostError::Config(_)), "{err}");
+        }
+        assert!(ledger.set_budget("  ", 1.0).is_err());
+        assert!(ledger.snapshot().is_empty());
+        drop(ledger);
+        let reopened = CostLedger::open(dir.path()).unwrap();
+        assert!(reopened.snapshot().is_empty(), "nothing journaled");
+    }
+
+    #[test]
+    fn invalid_prices_are_refused() {
+        let (_dir, ledger) = open_ledger();
+        for (pin, pout) in [(f64::NAN, 0.0), (0.0, -1.0), (f64::INFINITY, 0.0)] {
+            assert!(ledger
+                .record("p", "m", "", "", Some(1), Some(1), None, pin, pout)
+                .is_err());
+        }
+        assert_eq!(ledger.calls("p"), 0);
+    }
+
+    #[test]
+    fn zero_budget_blocks_immediately() {
+        let (_dir, ledger) = open_ledger();
+        ledger.set_budget("p", 0.0).unwrap();
+        assert!(ledger.check_budget("p").is_err());
+    }
+
+    #[test]
+    fn snapshot_reports_every_provider_sorted() {
+        let (_dir, ledger) = open_ledger();
+        ledger
+            .record("zeta", "m", "", "", Some(1000), Some(500), None, 1.0, 2.0)
+            .unwrap();
+        ledger.set_budget("alpha", 5.0).unwrap();
+        let snap = ledger.snapshot();
+        assert_eq!(snap.len(), 2);
+        assert_eq!(
+            snap[0],
+            ProviderSpend {
+                provider: "alpha".to_string(),
+                spend_usd: 0.0,
+                calls: 0,
+                input_tokens: 0,
+                output_tokens: 0,
+                budget_usd: Some(5.0),
+            }
+        );
+        assert_eq!(snap[1].provider, "zeta");
+        assert!((snap[1].spend_usd - 2.0).abs() < 1e-9);
+        assert_eq!(snap[1].calls, 1);
+        assert_eq!(snap[1].input_tokens, 1000);
+        assert_eq!(snap[1].output_tokens, 500);
+        assert_eq!(snap[1].budget_usd, None);
+        assert!(ledger.journal_path().ends_with("cost_ledger.jsonl"));
     }
 }

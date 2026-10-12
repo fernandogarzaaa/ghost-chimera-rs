@@ -84,13 +84,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      # Full history is required so `cargo mutants --changed` can compute
-      # the merge-base against the default branch.
+      # Full history is required so the gate can compute the merge-base
+      # between the base ref and HEAD for `cargo mutants --in-diff`.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Test mutation gate parser
+        run: python3 -m unittest discover -s .github/scripts -p 'test_*.py' -v
       - name: Install cargo-mutants
         run: cargo install cargo-mutants --version 27.1.0 --locked
       - name: Run mutation gate (80% kill rate on changed code)

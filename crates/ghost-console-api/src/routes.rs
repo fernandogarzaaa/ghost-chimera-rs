@@ -11,10 +11,11 @@ use axum::{
 };
 use ghost_core::GhostError;
 use ghost_pilot::{ChimeraPilotKernel, KernelOptions};
-use ghost_providers::ProviderRegistry;
+use ghost_providers::{CostLedger, MeteredProvider, ModelProvider, ProviderRegistry};
 use ghost_trust::{RecordStepArgs, ReplayExecution};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::Arc;
 
 use crate::state::AppState;
 
@@ -24,15 +25,50 @@ use crate::state::AppState;
 /// is configured, falls back to the offline deterministic backend and
 /// returns an honest `note` saying so (bug #5: never claim a model ran).
 ///
+/// Every model call is metered (GAP [durability/H1]): the provider is
+/// wrapped in a [`MeteredProvider`] backed by the durable cost ledger at
+/// `<state_dir>/cost_ledger.jsonl`, so budget caps are enforced before a
+/// request is sent and every call is journaled. If the ledger cannot be
+/// opened, model providers are disabled (fail closed) and the returned
+/// note says why; the deterministic backend still runs.
+///
 /// NOTE: `ProviderRegistry::from_env()` eagerly constructs reqwest
 /// *blocking* clients, which panic when built inside a tokio async
 /// context. Call [`build_kernel_async`] from async code instead.
-pub fn build_kernel(autonomy_level: &str) -> (ChimeraPilotKernel, Option<String>) {
+pub fn build_kernel(
+    autonomy_level: &str,
+    state_dir: &std::path::Path,
+) -> (ChimeraPilotKernel, Option<String>) {
     let registry = ProviderRegistry::from_env();
-    let provider = registry
+    let raw = registry
         .available_names()
         .first()
         .and_then(|name| registry.get(name));
+    build_kernel_with(autonomy_level, state_dir, raw)
+}
+
+/// [`build_kernel`] with an explicit (un-metered) provider choice.
+pub(crate) fn build_kernel_with(
+    autonomy_level: &str,
+    state_dir: &std::path::Path,
+    raw: Option<Arc<dyn ModelProvider>>,
+) -> (ChimeraPilotKernel, Option<String>) {
+    let (provider, ledger_note) = match raw {
+        None => (None, None),
+        Some(raw) => match open_ledger(state_dir) {
+            Ok(ledger) => {
+                let metered: Arc<dyn ModelProvider> =
+                    Arc::new(MeteredProvider::from_env(raw, ledger));
+                (Some(metered), None)
+            }
+            Err(err) => (
+                None,
+                Some(format!(
+                    "Model providers disabled: the cost ledger could not be opened ({err}). {OFFLINE_NOTE}"
+                )),
+            ),
+        },
+    };
     let options = KernelOptions {
         include_deterministic_backend: true,
         deterministic_fulfill: true,
@@ -40,21 +76,63 @@ pub fn build_kernel(autonomy_level: &str) -> (ChimeraPilotKernel, Option<String>
         autonomy_level: autonomy_level.to_string(),
     };
     let kernel = ChimeraPilotKernel::default_with(options, provider.clone());
-    let note = if provider.is_some() {
-        None
-    } else {
-        Some("Ran on the offline deterministic backend (no model provider configured).".to_string())
+    let note = match (&provider, ledger_note) {
+        (_, Some(ledger_note)) => Some(ledger_note),
+        (Some(_), None) => None,
+        (None, None) => Some(OFFLINE_NOTE.to_string()),
     };
     (kernel, note)
+}
+
+/// Open the durable cost ledger under `state_dir` (creating the dir).
+pub fn open_ledger(state_dir: &std::path::Path) -> Result<Arc<CostLedger>, GhostError> {
+    std::fs::create_dir_all(state_dir)?;
+    Ok(Arc::new(CostLedger::open(state_dir)?))
+}
+
+/// Build a kernel that never touches the network: deterministic backend
+/// only, regardless of which provider keys are in the environment.
+///
+/// Used by tests (so results never depend on the developer's shell) and
+/// available to callers that must stay offline.
+pub fn build_offline_kernel(autonomy_level: &str) -> ChimeraPilotKernel {
+    let options = KernelOptions {
+        include_deterministic_backend: true,
+        deterministic_fulfill: true,
+        include_model_provider_backend: false,
+        autonomy_level: autonomy_level.to_string(),
+    };
+    ChimeraPilotKernel::default_with(options, None)
+}
+
+/// Offline note shared by every deterministic-only path.
+const OFFLINE_NOTE: &str =
+    "Ran on the offline deterministic backend (no model provider configured).";
+
+/// Kernel for a request: offline when the state demands it, else
+/// [`build_kernel_async`].
+async fn kernel_for(state: &AppState) -> (ChimeraPilotKernel, Option<String>) {
+    if state.offline {
+        (
+            build_offline_kernel(&state.config.autonomy_level),
+            Some(OFFLINE_NOTE.to_string()),
+        )
+    } else {
+        build_kernel_async(&state.config.autonomy_level, &state.config.state_dir).await
+    }
 }
 
 /// Async wrapper around [`build_kernel`]: constructs the kernel on a
 /// blocking thread, because reqwest blocking clients cannot be built
 /// inside a tokio async context (they panic dropping their internal
 /// runtime there).
-pub async fn build_kernel_async(autonomy_level: &str) -> (ChimeraPilotKernel, Option<String>) {
+pub async fn build_kernel_async(
+    autonomy_level: &str,
+    state_dir: &std::path::Path,
+) -> (ChimeraPilotKernel, Option<String>) {
     let autonomy_level = autonomy_level.to_string();
-    tokio::task::spawn_blocking(move || build_kernel(&autonomy_level))
+    let state_dir = state_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || build_kernel(&autonomy_level, &state_dir))
         .await
         .expect("kernel construction is infallible on a blocking thread")
 }
@@ -105,7 +183,7 @@ pub async fn conversation_message(
         Ok(run) => run,
         Err(err) => return Json(json!({"ok": false, "error": err.to_string()})),
     };
-    let (kernel, note) = build_kernel_async(&state.config.autonomy_level).await;
+    let (kernel, note) = kernel_for(&state).await;
     let executions = match kernel.run(&objective) {
         Ok(executions) => executions,
         Err(err) => {
@@ -200,7 +278,7 @@ pub async fn trust_get_run(State(state): State<AppState>, Path(id): Path<String>
 
 /// Replay a journaled run through the kernel and return the comparison.
 pub async fn trust_replay(State(state): State<AppState>, Path(id): Path<String>) -> Response {
-    let (kernel, _note) = build_kernel_async(&state.config.autonomy_level).await;
+    let (kernel, _note) = kernel_for(&state).await;
     let report = state.trust.replay_run(&id, &|objective| {
         kernel.run(objective).map(|executions| {
             executions
@@ -343,51 +421,40 @@ pub async fn standing_orders_run(
 
 // -- static ------------------------------------------------------------
 
-/// Serve the console `index.html`.
-pub async fn index_html() -> Response {
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static/index.html");
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => (
-            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
-            bytes,
-        )
-            .into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": "index.html not found"})),
-        )
-            .into_response(),
-    }
+/// The console UI, embedded into the binary at compile time.
+///
+/// Previously the files were read at runtime from
+/// `env!("CARGO_MANIFEST_DIR")/static`, an absolute path on the *build*
+/// machine: every released binary (CLI zip, Electron sidecar) served 404s
+/// for the console UI on users' machines. Embedding makes the binary
+/// self-contained.
+const STATIC_FILES: &[(&str, &[u8])] = &[
+    ("index.html", include_bytes!("../static/index.html")),
+    ("app.js", include_bytes!("../static/app.js")),
+    (
+        "api_transport.js",
+        include_bytes!("../static/api_transport.js"),
+    ),
+    ("styles.css", include_bytes!("../static/styles.css")),
+    (
+        "nav_groups.json",
+        include_bytes!("../static/nav_groups.json"),
+    ),
+];
+
+/// Look up an embedded static file by its request path (no leading `/`).
+/// Only exact names match, so traversal (`../`, absolute paths, encoded
+/// separators) can never reach the filesystem.
+pub fn embedded_file(path: &str) -> Option<&'static [u8]> {
+    STATIC_FILES
+        .iter()
+        .find(|(name, _)| *name == path)
+        .map(|(_, bytes)| *bytes)
 }
 
-/// Serve a file from this crate's `./static` directory.
-///
-/// Implemented directly instead of `tower_http::services::ServeDir`:
-/// the sandbox has no reliable crates.io egress for tower-http 0.5's
-/// `fs`-feature transitive deps (`http-range-header`, `mime_guess`), so
-/// static serving is a real handler here. Path traversal is rejected and
-/// unknown files 404.
-pub async fn static_file(Path(path): Path<String>) -> Response {
-    let base = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("static");
-    let mut full = base.clone();
-    let mut rejected = false;
-    for component in std::path::Path::new(&path).components() {
-        match component {
-            std::path::Component::Normal(part) => full.push(part),
-            _ => {
-                rejected = true;
-                break;
-            }
-        }
-    }
-    if rejected || !full.is_file() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": "not found"})),
-        )
-            .into_response();
-    }
-    let content_type = match full.extension().and_then(|ext| ext.to_str()) {
+/// Content type by file extension.
+fn content_type_for(path: &str) -> &'static str {
+    match path.rsplit_once('.').map(|(_, ext)| ext) {
         Some("html") => "text/html; charset=utf-8",
         Some("js") => "application/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
@@ -396,14 +463,41 @@ pub async fn static_file(Path(path): Path<String>) -> Response {
         Some("png") => "image/png",
         Some("ico") => "image/x-icon",
         _ => "application/octet-stream",
-    };
-    match tokio::fs::read(&full).await {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, content_type)], bytes).into_response(),
-        Err(_) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({"ok": false, "error": "not found"})),
+    }
+}
+
+fn not_found(message: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({"ok": false, "error": message})),
+    )
+        .into_response()
+}
+
+/// Serve the console `index.html`.
+pub async fn index_html() -> Response {
+    match embedded_file("index.html") {
+        Some(bytes) => (
+            [(
+                axum::http::header::CONTENT_TYPE,
+                content_type_for("index.html"),
+            )],
+            bytes,
         )
             .into_response(),
+        None => not_found("index.html not found"),
+    }
+}
+
+/// Serve an embedded console asset; unknown paths 404.
+pub async fn static_file(Path(path): Path<String>) -> Response {
+    match embedded_file(&path) {
+        Some(bytes) => (
+            [(axum::http::header::CONTENT_TYPE, content_type_for(&path))],
+            bytes,
+        )
+            .into_response(),
+        None => not_found("not found"),
     }
 }
 
@@ -418,7 +512,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut config = GhostConfig::from_env();
         config.state_dir = dir.path().to_path_buf();
-        let state = AppState::new(config, None).unwrap();
+        // Offline: handler tests must not depend on provider keys.
+        let state = AppState::new(config, None).unwrap().with_offline(true);
         (dir, state)
     }
 
@@ -428,7 +523,8 @@ mod tests {
         // constructed inside an async context.
         // No provider credentials are expected in this environment.
         let registry = ProviderRegistry::from_env();
-        let (kernel, note) = build_kernel("supervised");
+        let dir = tempfile::tempdir().unwrap();
+        let (kernel, note) = build_kernel("supervised", dir.path());
         assert_eq!(kernel.autonomy_level(), "supervised");
         if registry.is_empty() {
             let note = note.expect("offline kernel must carry an honest note");
@@ -574,5 +670,156 @@ mod tests {
             .unwrap();
         let response = router.oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Fake provider for kernel-wiring tests (never touches the network).
+    struct EchoProvider;
+
+    impl ModelProvider for EchoProvider {
+        fn name(&self) -> &str {
+            "echo"
+        }
+        fn chat(
+            &self,
+            _system: &str,
+            user: &str,
+        ) -> Result<String, ghost_providers::ProviderError> {
+            Ok(format!("echo: {user}"))
+        }
+        fn validate_config(&self) -> Vec<String> {
+            Vec::new()
+        }
+        fn is_available(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn kernel_meters_every_provider_call_h1() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_dir = dir.path().join("state");
+        let (kernel, note) =
+            build_kernel_with("supervised", &state_dir, Some(Arc::new(EchoProvider)));
+        assert!(note.is_none(), "provider configured: no offline note");
+        let executions = kernel.run("write a poem").unwrap();
+        let by_echo = executions
+            .iter()
+            .find(|e| e.backend_id == "echo")
+            .expect("provider backend ran");
+        assert!(by_echo.ok);
+        // The call was journaled durably by the metered wrapper.
+        let ledger = CostLedger::open(&state_dir).unwrap();
+        assert_eq!(ledger.calls("echo"), 1);
+    }
+
+    #[test]
+    fn kernel_refuses_provider_over_budget_h1() {
+        let dir = tempfile::tempdir().unwrap();
+        let ledger = CostLedger::open(dir.path()).unwrap();
+        ledger.set_budget("echo", 0.0).unwrap();
+        drop(ledger);
+        let (kernel, _note) =
+            build_kernel_with("supervised", dir.path(), Some(Arc::new(EchoProvider)));
+        let executions = kernel.run("write a poem").unwrap();
+        assert!(executions.iter().all(|e| !e.ok), "{executions:?}");
+        assert!(
+            executions
+                .iter()
+                .any(|e| e.error.contains("budget exceeded")),
+            "{executions:?}"
+        );
+        assert_eq!(CostLedger::open(dir.path()).unwrap().calls("echo"), 0);
+    }
+
+    #[test]
+    fn kernel_disables_providers_when_ledger_unavailable_h1() {
+        let dir = tempfile::tempdir().unwrap();
+        // state_dir is a FILE: the ledger cannot be opened.
+        let state_dir = dir.path().join("not-a-dir");
+        std::fs::write(&state_dir, b"x").unwrap();
+        let (kernel, note) =
+            build_kernel_with("supervised", &state_dir, Some(Arc::new(EchoProvider)));
+        let note = note.expect("honest note");
+        assert!(note.contains("cost ledger could not be opened"), "{note}");
+        let executions = kernel.run("what is 6 * 7").unwrap();
+        assert!(executions.iter().all(|e| e.backend_id != "echo"));
+        assert_eq!(executions[0].output, "42");
+    }
+
+    #[test]
+    fn kernel_without_provider_is_offline_with_note() {
+        let dir = tempfile::tempdir().unwrap();
+        let (kernel, note) = build_kernel_with("supervised", dir.path(), None);
+        assert_eq!(note.as_deref(), Some(OFFLINE_NOTE));
+        assert_eq!(kernel.run("what is 6 * 7").unwrap()[0].output, "42");
+    }
+
+    #[test]
+    fn every_embedded_asset_is_present_and_non_empty() {
+        for name in [
+            "index.html",
+            "app.js",
+            "api_transport.js",
+            "styles.css",
+            "nav_groups.json",
+        ] {
+            let bytes = embedded_file(name).unwrap_or_else(|| panic!("{name} embedded"));
+            assert!(!bytes.is_empty(), "{name} empty");
+        }
+        assert!(embedded_file("../Cargo.toml").is_none());
+        assert!(embedded_file("/etc/passwd").is_none());
+        assert!(embedded_file("").is_none());
+    }
+
+    #[test]
+    fn content_types_by_extension() {
+        assert_eq!(content_type_for("a.html"), "text/html; charset=utf-8");
+        assert_eq!(
+            content_type_for("a.js"),
+            "application/javascript; charset=utf-8"
+        );
+        assert_eq!(content_type_for("a.css"), "text/css; charset=utf-8");
+        assert_eq!(content_type_for("a.json"), "application/json");
+        assert_eq!(content_type_for("a.svg"), "image/svg+xml");
+        assert_eq!(content_type_for("a.png"), "image/png");
+        assert_eq!(content_type_for("a.ico"), "image/x-icon");
+        assert_eq!(content_type_for("noext"), "application/octet-stream");
+    }
+
+    async fn get_raw(uri: &str) -> (StatusCode, String, Vec<u8>) {
+        let (_dir, state) = test_state();
+        let (router, _count) = router(state);
+        let request = axum::http::Request::builder()
+            .uri(uri)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        let status = response.status();
+        let ctype = response
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .to_vec();
+        (status, ctype, body)
+    }
+
+    #[tokio::test]
+    async fn ui_is_served_from_the_binary() {
+        let (status, ctype, body) = get_raw("/").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ctype, "text/html; charset=utf-8");
+        assert_eq!(body, embedded_file("index.html").unwrap());
+        let (status, ctype, body) = get_raw("/app.js").await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(ctype, "application/javascript; charset=utf-8");
+        assert_eq!(body, embedded_file("app.js").unwrap());
+        let (status, _, _) = get_raw("/nope.js").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, _, _) = get_raw("/..%2FCargo.toml").await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     }
 }

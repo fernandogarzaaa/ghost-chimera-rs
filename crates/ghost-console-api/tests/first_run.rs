@@ -14,16 +14,30 @@ use ghost_core::GhostConfig;
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-/// Provider credential env vars that must be absent for a true zero-config run.
-const PROVIDER_VARS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-    "NEBIUS_API_KEY",
-    "GROQ_API_KEY",
-    "GHOSTCHIMERA_MODEL_PROVIDER",
-];
+/// Extra env vars (beyond every provider's key var) that must be absent
+/// for a true zero-config run.
+const EXTRA_VARS: &[&str] = &["ANTHROPIC_API_KEY", "GHOSTCHIMERA_MODEL_PROVIDER"];
+
+/// Every provider credential env var known to the registry, plus extras.
+/// Clearing only a hand-picked subset made the test depend on the
+/// developer's shell (any other configured key turned the run online).
+fn provider_vars() -> Vec<&'static str> {
+    let mut vars: Vec<&'static str> = ghost_providers::PROVIDER_SPECS
+        .iter()
+        .map(|spec| spec.key_env)
+        .collect();
+    vars.extend_from_slice(EXTRA_VARS);
+    vars
+}
+
+/// The tests below mutate the shared process environment, and the kernel
+/// reads it on every request. Running them in parallel let one test's
+/// `Drop` restore keys while another was mid-request (flaky failures).
+/// Each `LiveServer` holds this lock for its whole lifetime.
+static ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 struct LiveServer {
+    _env_guard: tokio::sync::MutexGuard<'static, ()>,
     _dir: TempDir,
     base_url: String,
     saved_vars: Vec<(String, Option<String>)>,
@@ -32,6 +46,7 @@ struct LiveServer {
 
 impl LiveServer {
     async fn start() -> Self {
+        let env_guard = ENV_LOCK.lock().await;
         let dir = TempDir::new().unwrap();
         let state_dir = dir.path().join("state");
 
@@ -39,7 +54,7 @@ impl LiveServer {
         let saved_state_dir = std::env::var("GHOSTCHIMERA_STATE_DIR").ok();
         std::env::set_var("GHOSTCHIMERA_STATE_DIR", &state_dir);
         let mut saved_vars = Vec::new();
-        for var in PROVIDER_VARS {
+        for var in provider_vars() {
             let saved = std::env::var(var).ok();
             std::env::remove_var(var);
             saved_vars.push((var.to_string(), saved));
@@ -61,6 +76,7 @@ impl LiveServer {
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         Self {
+            _env_guard: env_guard,
             _dir: dir,
             base_url: format!("http://{addr}"),
             saved_vars,
@@ -69,7 +85,10 @@ impl LiveServer {
     }
 
     fn client(&self) -> reqwest::Client {
+        // Loopback only: never route through an HTTP(S)_PROXY from the
+        // developer's environment.
         reqwest::Client::builder()
+            .no_proxy()
             .timeout(Duration::from_secs(10))
             .build()
             .unwrap()

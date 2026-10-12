@@ -279,6 +279,10 @@ impl ModelProvider for OpenAiCompatibleProvider {
         self.spec.name
     }
 
+    fn model(&self) -> &str {
+        &self.model
+    }
+
     fn chat(&self, system: &str, user: &str) -> Result<String, ProviderError> {
         if !self.is_available() {
             return Err(ProviderError::Unavailable(format!(
@@ -359,6 +363,18 @@ mod tests {
             let _ = stream.write_all(reply.as_bytes());
         });
         (format!("http://{addr}/v1/chat/completions"), rx)
+    }
+
+    #[test]
+    fn model_reports_the_configured_model() {
+        let spec = OpenAiCompatibleProvider::spec_for("groq").expect("groq exists");
+        let provider = OpenAiCompatibleProvider::with_credentials(
+            spec,
+            "k".to_string(),
+            "groq-test-model".to_string(),
+            None,
+        );
+        assert_eq!(provider.model(), "groq-test-model");
     }
 
     #[test]

@@ -8,13 +8,15 @@
 pub mod anthropic;
 pub mod error;
 pub mod ledger;
+pub mod metered;
 pub mod openai_compatible;
 pub mod registry;
 pub mod traits;
 
 pub use anthropic::AnthropicProvider;
 pub use error::ProviderError;
-pub use ledger::CostLedger;
+pub use ledger::{CostLedger, ProviderSpend};
+pub use metered::{MeteredProvider, Pricing};
 pub use openai_compatible::{OpenAiCompatibleProvider, ProviderSpec, PROVIDER_SPECS};
 pub use registry::ProviderRegistry;
 pub use traits::ModelProvider;

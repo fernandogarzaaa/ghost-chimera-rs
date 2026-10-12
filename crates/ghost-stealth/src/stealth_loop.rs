@@ -228,6 +228,26 @@ impl StealthLoop {
         actions: &[Action],
         executor: &dyn Fn(&Action) -> Result<serde_json::Value, GhostError>,
     ) -> Result<Vec<ActionResult>, GhostError> {
+        // Validate BEFORE touching the executor: an unknown intervention
+        // must not cause real side effects that can never be recorded.
+        if !self
+            .interventions
+            .lock()
+            .unwrap()
+            .contains_key(intervention_id)
+        {
+            return Err(GhostError::NotFound(format!(
+                "intervention {intervention_id}"
+            )));
+        }
+        // An ACT with nothing to execute is a no-op, and a no-op must never
+        // be recorded as a Useful outcome (F1: "never record SUCCESSFUL on
+        // no-op"). Refuse explicitly; no outcome is recorded.
+        if actions.is_empty() {
+            return Err(GhostError::PolicyDenied(format!(
+                "intervention {intervention_id}: ACT decision has no actions to execute"
+            )));
+        }
         let mut results = Vec::with_capacity(actions.len());
         let mut any_failed = false;
         for action in actions {
@@ -407,5 +427,80 @@ mod tests {
             ste.outcomes(),
             vec![(decision.intervention_id, InterventionOutcome::Useful)]
         );
+    }
+
+    fn one_action() -> Vec<Action> {
+        vec![Action {
+            action_id: "a1".to_string(),
+            kind: "test".to_string(),
+            payload: serde_json::json!({}),
+        }]
+    }
+
+    #[test]
+    fn execute_actions_with_no_actions_records_nothing() {
+        // F1: an ACT with zero actions is a no-op; it must not be
+        // recorded as a Useful (or any) outcome.
+        let ste = StealthLoop::new(16, 100);
+        let id = ste.emit(prompt_event()).unwrap();
+        let never = |_: &Action| -> Result<serde_json::Value, GhostError> {
+            panic!("executor must not run for an empty action list")
+        };
+        let err = ste.execute_actions(&id, &[], &never).unwrap_err();
+        assert!(matches!(err, GhostError::PolicyDenied(_)), "{err}");
+        assert!(ste.outcomes().is_empty());
+        let ivn = ste.intervention(&id).unwrap();
+        assert_eq!(ivn.outcome, None);
+        assert_ne!(ivn.state, InterventionState::Observed);
+    }
+
+    #[test]
+    fn execute_actions_unknown_intervention_never_runs_executor() {
+        let ste = StealthLoop::new(16, 100);
+        let calls = std::cell::Cell::new(0);
+        let counting = |_: &Action| -> Result<serde_json::Value, GhostError> {
+            calls.set(calls.get() + 1);
+            Ok(serde_json::json!({}))
+        };
+        let err = ste
+            .execute_actions("nope", &one_action(), &counting)
+            .unwrap_err();
+        assert!(matches!(err, GhostError::NotFound(_)), "{err}");
+        assert_eq!(calls.get(), 0, "no side effects for unknown intervention");
+        assert!(ste.outcomes().is_empty());
+    }
+
+    #[test]
+    fn execute_actions_partial_failure_is_harmful_and_keeps_order() {
+        let ste = StealthLoop::new(16, 100);
+        let id = ste.emit(prompt_event()).unwrap();
+        let actions = vec![
+            Action {
+                action_id: "ok".to_string(),
+                kind: "test".to_string(),
+                payload: serde_json::json!({}),
+            },
+            Action {
+                action_id: "bad".to_string(),
+                kind: "test".to_string(),
+                payload: serde_json::json!({}),
+            },
+        ];
+        let exec = |a: &Action| -> Result<serde_json::Value, GhostError> {
+            if a.action_id == "bad" {
+                Err(GhostError::BackendUnavailable("boom".to_string()))
+            } else {
+                Ok(serde_json::json!({"done": true}))
+            }
+        };
+        let results = ste.execute_actions(&id, &actions, &exec).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].ok);
+        assert_eq!(results[0].result, Some(serde_json::json!({"done": true})));
+        assert!(results[0].error.is_none());
+        assert!(!results[1].ok);
+        assert!(results[1].result.is_none());
+        assert!(results[1].error.as_deref().unwrap().contains("boom"));
+        assert_eq!(ste.outcomes(), vec![(id, InterventionOutcome::Harmful)]);
     }
 }
