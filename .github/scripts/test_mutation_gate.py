@@ -145,5 +145,70 @@ class TestOnlySkipTest(unittest.TestCase):
             gate.git_diff, gate.run_mutants = orig_diff, orig_run
 
 
+class MainFlowTest(unittest.TestCase):
+    """End-to-end exit codes of main() with git and cargo-mutants stubbed."""
+
+    def setUp(self) -> None:
+        self._orig = (gate.git_diff, gate.run_mutants)
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        gate.git_diff = lambda base: "diff --git a/src/lib.rs b/src/lib.rs\n"
+
+    def tearDown(self) -> None:
+        gate.git_diff, gate.run_mutants = self._orig
+        self._tmp.cleanup()
+
+    def _run(self, summaries: list[str] | None, code: int = 0, fail_under: str = "80") -> int:
+        def fake(out_dir: Path, diff: Path, jobs: int) -> tuple[int, str]:
+            self.assertTrue(diff.read_text(encoding="utf-8").startswith("diff --git"))
+            self.assertEqual(jobs, 2)
+            if summaries is not None:
+                write_fixture(Path(out_dir), summaries)
+            return code, "Found mutants to test"
+
+        gate.run_mutants = fake
+        return gate.main(["--output-dir", str(self.root), "--fail-under", fail_under])
+
+    def test_passing_run_returns_zero(self) -> None:
+        self.assertEqual(self._run(["CaughtMutant"] * 9 + ["MissedMutant"]), 0)
+
+    def test_below_threshold_returns_one(self) -> None:
+        self.assertEqual(self._run(["CaughtMutant"] * 7 + ["MissedMutant"] * 3), 1)
+
+    def test_exactly_at_threshold_passes(self) -> None:
+        self.assertEqual(self._run(["CaughtMutant"] * 8 + ["MissedMutant"] * 2), 0)
+
+    def test_missed_exit_codes_2_and_3_are_still_evaluated(self) -> None:
+        self.assertEqual(self._run(["CaughtMutant"] * 4, code=2), 0)
+
+    def test_bad_exit_code_fails_closed(self) -> None:
+        self.assertEqual(self._run(["CaughtMutant"] * 4, code=1), 1)
+        self.assertEqual(self._run(None, code=4), 1)
+
+    def test_unreadable_results_fail_closed(self) -> None:
+        self.assertEqual(self._run(None), 1)
+
+    def test_diff_error_fails_closed(self) -> None:
+        def boom(base: str) -> str:
+            raise gate.GateError("bad ref")
+
+        gate.git_diff = boom
+        self.assertEqual(gate.main(["--output-dir", str(self.root)]), 1)
+
+    def test_empty_diff_is_not_applicable(self) -> None:
+        gate.git_diff = lambda base: "   \n"
+        gate.run_mutants = lambda *a: self.fail("cargo-mutants must not run on an empty diff")
+        self.assertEqual(gate.main(["--output-dir", str(self.root)]), 0)
+
+    def test_rate_and_evaluate_message(self) -> None:
+        counts = gate.Counts(total=4, caught=3, missed=1, timeout=0, unviable=0, success=0)
+        self.assertAlmostEqual(counts.rate, 75.0)
+        ok, msg = gate.evaluate(counts, 75.0)
+        self.assertTrue(ok)
+        self.assertIn("3/4 = 75.0%", msg)
+        self.assertFalse(gate.evaluate(counts, 75.1)[0])
+        self.assertEqual(gate.Counts(0, 0, 0, 0, 0, 0).rate, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
