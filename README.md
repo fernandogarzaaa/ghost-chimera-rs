@@ -8,6 +8,13 @@ provider adapters, trust journaling, and an Electron desktop shell. The rebuild
 is under active development; a green unit-test job is not by itself a production
 readiness claim. See [SPEC.md](SPEC.md) for the architecture and intended scope.
 
+> **Which GHOST-Chimera is canonical?** For the Nebius x NVIDIA hackathon the
+> Python project, [fernandogarzaaa/GHOST-Chimera](https://github.com/fernandogarzaaa/GHOST-Chimera)
+> (`pipx install ghostchimera`, then `ghost demo`), is the canonical, judged
+> implementation. `ghost-chimera-rs` is the lean long-term core: a smaller Rust
+> rebuild of the same ideas that the Python project's design will converge on
+> over time. It is not what the hackathon submission runs.
+
 ## Status
 
 - **Workspace:** seven Rust crates (`ghost-core`, `ghost-trust`, `ghost-stealth`,
